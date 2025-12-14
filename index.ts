@@ -6,7 +6,6 @@ import { SSEServerTransport } from "@modelcontextprotocol/sdk/server/sse.js";
 import {
   CallToolRequestSchema,
   ListToolsRequestSchema,
-  ToolSchema,
   RootsListChangedNotificationSchema,
   type Root,
 } from "@modelcontextprotocol/sdk/types.js";
@@ -33,9 +32,10 @@ const DEFAULT_TIMEOUT = 300000; // 5 minutes
 const args = process.argv.slice(2);
 const useSSE = args.includes('--sse');
 const ssePort = parseInt(args.find(arg => arg.startsWith('--port='))?.split('=')[1] || '3001');
-const directoryArgs = args.filter(arg => 
-  !['--sse', '--embedded', '--stdio'].some(flag => arg.startsWith(flag)) && 
-  !arg.startsWith('--port=')
+const directoryArgs = args.filter(arg =>
+  !['--sse', '--embedded', '--stdio'].some(flag => arg.startsWith(flag)) &&
+  !arg.startsWith('--port=') &&
+  !arg.startsWith('--timeout=')
 );
 const timeoutArg = args.find(arg => arg.startsWith('--timeout='));
 const parsedTimeout = timeoutArg ? parseInt(timeoutArg.split('=')[1]) : NaN;
@@ -45,16 +45,16 @@ const feedbackTimeout = !isNaN(parsedTimeout) ? parsedTimeout : DEFAULT_TIMEOUT;
 let allowedDirectories: string[] = [];
 
 // Auto-detect current directory if no directories provided
-allowedDirectories = directoryArgs.length === 0 
+allowedDirectories = directoryArgs.length === 0
   ? [normalizePath(process.cwd())]
   : await Promise.all(directoryArgs.map(async (dir) => {
-      const absolute = path.resolve(expandHome(dir));
-      try {
-        return normalizePath(await fs.realpath(absolute));
-      } catch {
-        return normalizePath(absolute);
-      }
-    }));
+    const absolute = path.resolve(expandHome(dir));
+    try {
+      return normalizePath(await fs.realpath(absolute));
+    } catch {
+      return normalizePath(absolute);
+    }
+  }));
 
 directoryArgs.length === 0 && console.error(`Auto-detected allowed directory: ${allowedDirectories[0]}`);
 
@@ -99,8 +99,13 @@ const ReadImageFileArgsSchema = z.object({
   path: z.string()
 });
 
-const ToolInputSchema = ToolSchema.shape.inputSchema;
-type ToolInput = z.infer<typeof ToolInputSchema>;
+// Define ToolInput type for JSON Schema objects returned by zodToJsonSchema
+type ToolInput = {
+  type: "object";
+  properties?: Record<string, unknown>;
+  required?: string[];
+  [key: string]: unknown;
+};
 
 function formatResponseWithHeadTail(content: string, head?: number, tail?: number): { content: { type: "text", text: string }[] } {
   if (head && tail) {
@@ -208,7 +213,7 @@ async function notifyClientsOfFileChange(filePath: string) {
       },
       { resolved: 0, remaining: [] as typeof waitingForFileChange }
     );
-    
+
     waitingForFileChange.splice(0, waitingForFileChange.length, ...remaining);
     console.error(`Resolving ${resolved} waiting calls for ${filePath}`);
 
@@ -274,7 +279,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
           "5. PROVIDE CONTEXT: You should summarize what you have done and provide project context to help the user provide meaningful feedback for the next step.\n" +
           "6. KEEP ITERATING: If the user provides feedback, suggestions, or asks questions, continue the feedback loop by calling this tool again after addressing their input.\n" +
           "7. NEVER ASSUME COMPLETION: Do not assume a task is complete without explicit user confirmation through this feedback mechanism.\n\n",
-        
+
         inputSchema: zodToJsonSchema(AskReviewArgsSchema) as ToolInput,
       },
       {
@@ -299,7 +304,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   try {
     // Ensure server is initialized on first tool call
     await ensureInitialized();
-    
+
     const { name, arguments: args } = request.params;
 
     switch (name) {
@@ -310,7 +315,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         }
         // Determine path: use provided path if any, else default to ./feedback.md
         const targetPath = parsed.data.path || path.join(process.cwd(), 'feedback.md');
-        
+
         // Create feedback.md file if it doesn't exist (only for default feedback.md, not custom paths)
         if (!parsed.data.path) {
           try {
@@ -327,7 +332,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
             }
           }
         }
-        
+
         const validPath = await validatePath(targetPath);
         const stats = await fs.stat(validPath);
         const currentModified = stats.mtime.getTime();
@@ -348,8 +353,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           }
 
           const content = parsed.data.tail ? await tailFile(validPath, parsed.data.tail)
-                        : parsed.data.head ? await headFile(validPath, parsed.data.head)
-                        : await readFileContent(validPath);
+            : parsed.data.head ? await headFile(validPath, parsed.data.head)
+              : await readFileContent(validPath);
 
           return { content: [{ type: "text", text: content }] };
         }
@@ -357,7 +362,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         // File hasn't changed - wait for file change using file watcher
         console.error("check_review: File hasn't changed, waiting for modification...");
         console.error(`check_review: Current waiting queue size: ${waitingForFileChange.length}`);
-        
+
         const content = await new Promise<string>((resolve, reject) => {
           const timeout = setTimeout(() => {
             const index = waitingForFileChange.findIndex(w => w.resolve === resolve);
@@ -387,7 +392,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
         return formatResponseWithHeadTail(content, parsed.data.head, parsed.data.tail);
 
-        
+
       }
 
       case "view_media": {
@@ -565,7 +570,7 @@ process.on('SIGINT', () => {
     try {
       watcher.close();
       console.error(`Closed watcher for ${watchedPath}`);
-    } catch {}
+    } catch { }
   }
   process.exit(0);
 });
