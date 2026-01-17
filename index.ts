@@ -280,7 +280,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
           "6. KEEP ITERATING: If the user provides feedback, suggestions, or asks questions, continue the feedback loop by calling this tool again after addressing their input.\n" +
           "7. NEVER ASSUME COMPLETION: Do not assume a task is complete without explicit user confirmation through this feedback mechanism.\n\n",
 
-        inputSchema: zodToJsonSchema(AskReviewArgsSchema) as ToolInput,
+        inputSchema: zodToJsonSchema(AskReviewArgsSchema, { target: "openApi3" }) as ToolInput,
       },
       {
         name: "view_media",
@@ -294,7 +294,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
           "The tool streams files efficiently and returns base64-encoded data with proper MIME type detection.\n\n" +
           "Args:\n" +
           "    path: Absolute or relative path to the image file within allowed directories",
-        inputSchema: zodToJsonSchema(ReadImageFileArgsSchema) as ToolInput,
+        inputSchema: zodToJsonSchema(ReadImageFileArgsSchema, { target: "openApi3" }) as ToolInput,
       },
     ],
   };
