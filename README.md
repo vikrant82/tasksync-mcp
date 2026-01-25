@@ -60,8 +60,8 @@ npm run build
   "mcp": {
     "tasksync": {
       "type": "local",
-      "command": "node",
-      "args": [
+      "command": [ 
+        "node",
         "/absolute/path/to/tasksync-mcp/dist/index.js",
         "/path/to/your/workspace",
         "--timeout=300000"
@@ -78,12 +78,13 @@ npm run build
   "mcp": {
     "tasksync": {
       "type": "local",
-      "command": "node",
-      "args": [
-        "C:/Users/yourname/tasksync-mcp/dist/index.js",
-        "C:/Users/yourname/projects/myproject",
+      "command": [
+        "node",
+        "C:\\gab\\tasksync-mcp\\dist\\index.js",
+        "C:\\gab",
         "--timeout=300000"
-      ]
+      ],
+      "enabled": true
     }
   }
 }
