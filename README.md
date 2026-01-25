@@ -22,26 +22,74 @@ This is an MCP server that helps with  feedback-oriented development workflows i
 
 ## 🛠️ Quick Setup
 
-</details>
-
 Add to `mcp.json`:
 
 ```json
- {
-    "servers": {
-        "tasksync": {
-        "command": "npx",
-        "type": "stdio",
-        "args": ["-y", "tasksync-mcp@latest", "/path/to/directory", "--timeout=300000"]
-        }
+{
+  "servers": {
+    "tasksync": {
+      "command": "npx",
+      "type": "stdio",
+      "args": ["-y", "tasksync-mcp@latest", "/path/to/directory", "--timeout=300000"]
     }
+  }
 }
 ```
 
 **Configuration Options:**
 - `--timeout=N`: Set the timeout in milliseconds for waiting for feedback (default: 300000ms / 5 minutes)
 
-</details>
+### OpenCode Configuration
+
+For [OpenCode](https://opencode.ai), use the local build method with `opencode.jsonc`:
+
+**Step 1: Clone and Build**
+
+```bash
+git clone https://github.com/4regab/tasksync-mcp.git
+cd tasksync-mcp
+npm install
+npm run build
+```
+
+**Step 2: Configure opencode.jsonc**
+
+```jsonc
+{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "tasksync": {
+      "type": "local",
+      "command": "node",
+      "args": [
+        "/absolute/path/to/tasksync-mcp/dist/index.js",
+        "/path/to/your/workspace",
+        "--timeout=300000"
+      ]
+    }
+  }
+}
+```
+
+**Windows Example:**
+```jsonc
+{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "tasksync": {
+      "type": "local",
+      "command": "node",
+      "args": [
+        "C:/Users/yourname/tasksync-mcp/dist/index.js",
+        "C:/Users/yourname/projects/myproject",
+        "--timeout=300000"
+      ]
+    }
+  }
+}
+```
+
+> **Note:** always make sure you have feedback.md file on your workspace before prompting.
 
 ## 🔨 Available Tools
 
@@ -62,35 +110,7 @@ Add to `mcp.json`:
 4. **Continuous Loop** - After completing user tasks/questions, agent calls the tool again
 5. **Loop Forever** - This continues indefinitely until user stops the chat
 
-```mermaid
-graph TD
-    A[User Prompt + TaskSync MCP Rules] --> B[Agent Response to Prompt]
-    B --> C[Agent Calls get_feedback Tool]
-    C --> D[Agent Acts on Feedback]
-    D --> E{Need More Info?}
-    
-    E -->|Yes - Clarification| F[Call get_feedback Tool]
-    E -->|Yes - Confirmation| G[Call get_feedback Tool]
-    E -->|Yes - New Task| H[Call get_feedback Tool]
-    E -->|Yes - More Feedback| I[Call get_feedback Tool]
-    E -->|Task Complete| J[Call get_feedback Tool Again]
-    
-    F --> D
-    G --> D
-    H --> D
-    I --> D
-    J --> D
-    
-    D --> K[Continue Loop Forever]
-    K --> C
-    
-    class A userAction
-    class B,D agentAction
-    class C,F,G,H,I,J feedback
-    class E,K loop
-```
-
-## 🛟 Best Practices
+## 🛟 Best Practices (add this on your rules)
 
 ### Agent Rules for Optimal Performance
 
