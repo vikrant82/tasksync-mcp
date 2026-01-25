@@ -65,7 +65,8 @@ npm run build
         "/absolute/path/to/tasksync-mcp/dist/index.js",
         "/path/to/your/workspace",
         "--timeout=300000"
-      ]
+      ],
+      "enabled": true
     }
   }
 }
