@@ -12,6 +12,8 @@ import {
 import fs from "fs/promises";
 import { createReadStream, watch, FSWatcher } from "fs";
 import path from "path";
+import { fileURLToPath } from "url";
+import { spawn, type ChildProcess } from "child_process";
 import { z } from "zod";
 import { zodToJsonSchema } from "zod-to-json-schema";
 import express from "express";
@@ -25,16 +27,20 @@ import {
   setAllowedDirectories,
 } from './lib.js';
 
-const DEFAULT_TIMEOUT = 300000; // 5 minutes
+const DEFAULT_TIMEOUT = 30000; // 30 seconds — must be less than MCP client timeout
 // Parse configuration from environment variables or command line
 
 // Command line argument parsing with embedded mode support
 const args = process.argv.slice(2);
 const useSSE = args.includes('--sse');
+const noUI = args.includes('--no-ui');
 const ssePort = parseInt(args.find(arg => arg.startsWith('--port='))?.split('=')[1] || '3001');
+const uiPortArg = args.find(arg => arg.startsWith('--ui-port='));
+const uiPort = parseInt(uiPortArg?.split('=')[1] || process.env.FEEDBACK_PORT || '3456');
 const directoryArgs = args.filter(arg =>
-  !['--sse', '--embedded', '--stdio'].some(flag => arg.startsWith(flag)) &&
+  !['--sse', '--embedded', '--stdio', '--no-ui'].some(flag => arg.startsWith(flag)) &&
   !arg.startsWith('--port=') &&
+  !arg.startsWith('--ui-port=') &&
   !arg.startsWith('--timeout=')
 );
 const timeoutArg = args.find(arg => arg.startsWith('--timeout='));
@@ -77,12 +83,12 @@ const lastFileModifiedByPath: Map<string, number> = new Map();
 const fileWatchers: Map<string, FSWatcher> = new Map();
 const connectedTransports: Set<SSEServerTransport> = new Set();
 
-// Waiting mechanism for check_review
-const waitingForFileChange: Array<{
-  path: string;
-  resolve: (content: string) => void;
-  reject: (error: Error) => void;
-}> = [];
+// Track last-returned content per path to detect actual content changes (not mtime-based)
+const lastReturnedContent: Map<string, string> = new Map();
+
+// Long-poll settings: block inside get_feedback to reduce context entries
+const INTERNAL_POLL_MS = 3000;  // Check file every 3s inside the blocking call
+const MAX_WAIT_MS = 60000;      // Block for up to 60s before returning [WAITING]
 
 // Lazy initialization state
 let isInitialized = false;
@@ -152,7 +158,18 @@ const server = new Server(
 async function ensureInitialized() {
   if (isInitialized) return;
   console.error("Initializing TaskSync server components...");
-  await setupFileWatcher(path.join(process.cwd(), 'feedback.md'), true);
+  const feedbackFile = path.join(process.cwd(), 'feedback.md');
+  await setupFileWatcher(feedbackFile, true);
+  // Seed lastReturnedContent with existing file content so stale content isn't treated as new
+  try {
+    const validFeedbackPath = await validatePath(feedbackFile);
+    const existingContent = await readFileContent(validFeedbackPath);
+    const trimmed = existingContent.trim();
+    if (trimmed.length > 0) {
+      lastReturnedContent.set(validFeedbackPath, trimmed);
+      console.error(`Seeded lastReturnedContent for ${validFeedbackPath} (${trimmed.length} chars)`);
+    }
+  } catch { /* file might not exist yet, that's fine */ }
   isInitialized = true;
   console.error("TaskSync server initialized successfully");
 }
@@ -183,7 +200,10 @@ async function setupFileWatcher(filePath: string, createIfMissing: boolean = fal
     if (!fileWatchers.has(filePath)) {
       const watcher = watch(filePath, async (eventType) => {
         console.error(`File watcher event: ${eventType} for ${filePath}`);
-        eventType === 'change' && await notifyClientsOfFileChange(filePath);
+        // Handle both 'change' and 'rename' events — macOS editors often emit 'rename' for atomic saves
+        if (eventType === 'change' || eventType === 'rename') {
+          await notifyClientsOfFileChange(filePath);
+        }
       });
       fileWatchers.set(filePath, watcher);
       console.error(`File watcher setup successfully for: ${filePath}`);
@@ -205,19 +225,7 @@ async function notifyClientsOfFileChange(filePath: string) {
     lastFileModifiedByPath.set(filePath, currentModified);
     const content = await readFileContent(filePath);
 
-    // Resolve waiting calls and filter remaining
-    const { resolved, remaining } = waitingForFileChange.reduce(
-      (acc, item) => {
-        item.path === filePath ? (item.resolve(content), acc.resolved++) : acc.remaining.push(item);
-        return acc;
-      },
-      { resolved: 0, remaining: [] as typeof waitingForFileChange }
-    );
-
-    waitingForFileChange.splice(0, waitingForFileChange.length, ...remaining);
-    console.error(`Resolving ${resolved} waiting calls for ${filePath}`);
-
-    // Send notifications to all connected clients
+    // Send notifications to all connected SSE clients
     const notifications = connectedTransports.size;
     await Promise.allSettled([...connectedTransports].map(transport =>
       transport.send({
@@ -236,7 +244,7 @@ async function notifyClientsOfFileChange(filePath: string) {
       }).catch(error => console.error(`Failed to send notification to client: ${error}`))
     ));
 
-    console.error(`File change notification sent to ${notifications} clients and ${resolved} waiting calls resolved for ${filePath}`);
+    console.error(`File change notification sent to ${notifications} SSE clients for ${filePath}`);
   } catch (error) {
     console.error(`Error in notifyClientsOfFileChange: ${error}`);
   }
@@ -334,65 +342,38 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         }
 
         const validPath = await validatePath(targetPath);
-        const stats = await fs.stat(validPath);
-        const currentModified = stats.mtime.getTime();
 
-        // Ensure a watcher exists for this path (do not create file if missing)
-        await setupFileWatcher(validPath, false);
+        if (parsed.data.head && parsed.data.tail) {
+          throw new Error("Cannot specify both head and tail parameters simultaneously");
+        }
 
-        const lastKnown = lastFileModifiedByPath.get(validPath) ?? null;
-        console.error(`check_review: Current file modified: ${currentModified}, Last known: ${lastKnown}`);
-
-        // If this is the first call or file has changed, return content immediately
-        if (lastKnown === null || lastKnown < currentModified) {
-          console.error("check_review: File has changed, returning content immediately");
-          lastFileModifiedByPath.set(validPath, currentModified);
-
-          if (parsed.data.head && parsed.data.tail) {
-            throw new Error("Cannot specify both head and tail parameters simultaneously");
-          }
-
+        // Blocking long-poll: check file every INTERNAL_POLL_MS for up to MAX_WAIT_MS
+        // This reduces context entries from ~6/min to ~1/min
+        const pollStart = Date.now();
+        while (true) {
           const content = parsed.data.tail ? await tailFile(validPath, parsed.data.tail)
             : parsed.data.head ? await headFile(validPath, parsed.data.head)
               : await readFileContent(validPath);
 
-          return { content: [{ type: "text", text: content }] };
+          const trimmed = content.trim();
+          const lastContent = lastReturnedContent.get(validPath);
+
+          // New content detected — return immediately
+          if (trimmed.length > 0 && trimmed !== lastContent) {
+            console.error(`get_feedback: New feedback detected (${trimmed.length} chars)`);
+            lastReturnedContent.set(validPath, trimmed);
+            return { content: [{ type: "text", text: content }] };
+          }
+
+          // Check if we've exceeded the max wait time
+          if (Date.now() - pollStart >= MAX_WAIT_MS) {
+            console.error(`get_feedback: No new feedback after ${MAX_WAIT_MS / 1000}s`);
+            return { content: [{ type: "text", text: '[WAITING] No new feedback yet. Call get_feedback again to continue waiting.' }] };
+          }
+
+          // Wait before next internal poll
+          await new Promise(resolve => setTimeout(resolve, INTERNAL_POLL_MS));
         }
-
-        // File hasn't changed - wait for file change using file watcher
-        console.error("check_review: File hasn't changed, waiting for modification...");
-        console.error(`check_review: Current waiting queue size: ${waitingForFileChange.length}`);
-
-        const content = await new Promise<string>((resolve, reject) => {
-          const timeout = setTimeout(() => {
-            const index = waitingForFileChange.findIndex(w => w.resolve === resolve);
-            if (index !== -1) {
-              waitingForFileChange.splice(index, 1);
-            }
-            console.error(`check_review: Timeout reached after ${feedbackTimeout}ms`);
-            reject(new Error(`Timeout waiting for file change (${feedbackTimeout}ms)`));
-          }, feedbackTimeout);
-
-          console.error("check_review: Adding to waiting queue");
-          waitingForFileChange.push({
-            path: validPath,
-            resolve: (content: string) => {
-              console.error("check_review: Promise resolved with content");
-              clearTimeout(timeout);
-              resolve(content);
-            },
-            reject: (error: Error) => {
-              console.error(`check_review: Promise rejected with error: ${error.message}`);
-              clearTimeout(timeout);
-              reject(error);
-            }
-          });
-          console.error(`check_review: Updated waiting queue size: ${waitingForFileChange.length}`);
-        });
-
-        return formatResponseWithHeadTail(content, parsed.data.head, parsed.data.tail);
-
-
       }
 
       case "view_media": {
@@ -481,6 +462,40 @@ server.oninitialized = async () => {
 };
 
 // Start server
+// Track spawned feedback UI process for cleanup
+let feedbackUIProcess: ChildProcess | null = null;
+
+function startFeedbackUI() {
+  const __dirname = path.dirname(fileURLToPath(import.meta.url));
+  const serverScript = path.join(__dirname, 'feedback-server.js');
+  const feedbackFile = path.join(process.cwd(), 'feedback.md');
+
+  feedbackUIProcess = spawn('node', [serverScript, `--port=${uiPort}`, feedbackFile], {
+    stdio: ['ignore', 'ignore', 'inherit'], // inherit stderr for logs, ignore stdin/stdout (MCP uses them)
+    cwd: process.cwd(),
+  });
+
+  feedbackUIProcess.on('error', (err) => {
+    console.error(`Feedback UI failed to start: ${err.message}`);
+    feedbackUIProcess = null;
+  });
+
+  feedbackUIProcess.on('exit', (code) => {
+    if (code !== 0 && code !== null) {
+      console.error(`Feedback UI exited with code ${code}`);
+    }
+    feedbackUIProcess = null;
+  });
+
+  console.error(`Feedback UI starting at http://localhost:${uiPort}`);
+
+  // Auto-open the browser after a short delay to let the server start
+  setTimeout(() => {
+    const url = `http://localhost:${uiPort}`;
+    spawn('open', [url], { stdio: 'ignore' });
+  }, 1000);
+}
+
 async function runServer() {
   if (useSSE) {
     await runSSEServer();
@@ -495,6 +510,10 @@ async function runStdioServer() {
   console.error("TaskSync MCP Server running on stdio");
   console.error(`Allowed directories: ${allowedDirectories.join(', ')}`);
   console.error("Server will initialize components when first tool is called");
+
+  if (!noUI) {
+    startFeedbackUI();
+  }
 }
 
 async function runSSEServer() {
@@ -563,17 +582,28 @@ async function runSSEServer() {
   });
 }
 
-// Cleanup on exit
-process.on('SIGINT', () => {
+// Cleanup helper — safe to call multiple times
+let cleanedUp = false;
+function cleanup() {
+  if (cleanedUp) return;
+  cleanedUp = true;
   console.error('\nShutting down server...');
+  if (feedbackUIProcess) {
+    feedbackUIProcess.kill();
+    console.error('Stopped feedback UI');
+  }
   for (const [watchedPath, watcher] of fileWatchers.entries()) {
     try {
       watcher.close();
       console.error(`Closed watcher for ${watchedPath}`);
     } catch { }
   }
-  process.exit(0);
-});
+}
+
+// Handle all exit scenarios
+process.on('SIGINT', () => { cleanup(); process.exit(0); });
+process.on('SIGTERM', () => { cleanup(); process.exit(0); });
+process.on('exit', cleanup); // Final safety net (sync-only, but kill() is sync)
 
 runServer().catch((error) => {
   console.error("Fatal error running TaskSync server:", error);
