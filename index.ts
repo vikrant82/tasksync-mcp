@@ -12,8 +12,7 @@ import {
 import fs from "fs/promises";
 import { createReadStream, watch, FSWatcher } from "fs";
 import path from "path";
-import { fileURLToPath } from "url";
-import { spawn, type ChildProcess } from "child_process";
+import { spawn } from "child_process";
 import { z } from "zod";
 import { zodToJsonSchema } from "zod-to-json-schema";
 import express from "express";
@@ -26,8 +25,9 @@ import {
   headFile,
   setAllowedDirectories,
 } from './lib.js';
+import { FEEDBACK_HTML } from './feedback-html.js';
 
-const DEFAULT_TIMEOUT = 30000; // 30 seconds — must be less than MCP client timeout
+const DEFAULT_TIMEOUT = 0; // 0 = block forever (requires mcp_timeout: "never" on client); >0 = return [WAITING] after N ms
 // Parse configuration from environment variables or command line
 
 // Command line argument parsing with embedded mode support
@@ -86,9 +86,24 @@ const connectedTransports: Set<SSEServerTransport> = new Set();
 // Track last-returned content per path to detect actual content changes (not mtime-based)
 const lastReturnedContent: Map<string, string> = new Map();
 
-// Long-poll settings: block inside get_feedback to reduce context entries
-const INTERNAL_POLL_MS = 3000;  // Check file every 3s inside the blocking call
-const MAX_WAIT_MS = 60000;      // Block for up to 60s before returning [WAITING]
+// Long-poll settings (used only as fallback when feedbackTimeout > 0)
+const INTERNAL_POLL_MS = 3000;
+
+// Promise-based feedback channel — resolves when user submits via HTTP or file edit
+let pendingFeedbackResolve: ((content: string) => void) | null = null;
+let queuedFeedback: string | null = null;
+
+function resolvePendingFeedback(content: string): boolean {
+  if (pendingFeedbackResolve) {
+    const resolve = pendingFeedbackResolve;
+    pendingFeedbackResolve = null;
+    resolve(content);
+    return true;
+  }
+  // No pending request — queue for next get_feedback call
+  queuedFeedback = content;
+  return false;
+}
 
 // Lazy initialization state
 let isInitialized = false;
@@ -225,6 +240,14 @@ async function notifyClientsOfFileChange(filePath: string) {
     lastFileModifiedByPath.set(filePath, currentModified);
     const content = await readFileContent(filePath);
 
+    // Resolve pending get_feedback Promise if file content is new
+    const trimmed = content.trim();
+    const lastContent = lastReturnedContent.get(filePath);
+    if (trimmed.length > 0 && trimmed !== lastContent) {
+      lastReturnedContent.set(filePath, trimmed);
+      resolvePendingFeedback(content);
+    }
+
     // Send notifications to all connected SSE clients
     const notifications = connectedTransports.size;
     await Promise.allSettled([...connectedTransports].map(transport =>
@@ -347,33 +370,50 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           throw new Error("Cannot specify both head and tail parameters simultaneously");
         }
 
-        // Blocking long-poll: check file every INTERNAL_POLL_MS for up to MAX_WAIT_MS
-        // This reduces context entries from ~6/min to ~1/min
-        const pollStart = Date.now();
-        while (true) {
-          const content = parsed.data.tail ? await tailFile(validPath, parsed.data.tail)
-            : parsed.data.head ? await headFile(validPath, parsed.data.head)
-              : await readFileContent(validPath);
-
-          const trimmed = content.trim();
-          const lastContent = lastReturnedContent.get(validPath);
-
-          // New content detected — return immediately
-          if (trimmed.length > 0 && trimmed !== lastContent) {
-            console.error(`get_feedback: New feedback detected (${trimmed.length} chars)`);
-            lastReturnedContent.set(validPath, trimmed);
-            return { content: [{ type: "text", text: content }] };
-          }
-
-          // Check if we've exceeded the max wait time
-          if (Date.now() - pollStart >= MAX_WAIT_MS) {
-            console.error(`get_feedback: No new feedback after ${MAX_WAIT_MS / 1000}s`);
-            return { content: [{ type: "text", text: '[WAITING] No new feedback yet. Call get_feedback again to continue waiting.' }] };
-          }
-
-          // Wait before next internal poll
-          await new Promise(resolve => setTimeout(resolve, INTERNAL_POLL_MS));
+        // Check for queued feedback (arrived between get_feedback calls)
+        if (queuedFeedback !== null) {
+          const content = queuedFeedback;
+          queuedFeedback = null;
+          console.error(`get_feedback: Returning queued feedback (${content.length} chars)`);
+          return formatResponseWithHeadTail(content, parsed.data.head, parsed.data.tail);
         }
+
+        // Check if file already has new content
+        const existingContent = parsed.data.tail ? await tailFile(validPath, parsed.data.tail)
+          : parsed.data.head ? await headFile(validPath, parsed.data.head)
+            : await readFileContent(validPath);
+        const existingTrimmed = existingContent.trim();
+        if (existingTrimmed.length > 0 && existingTrimmed !== lastReturnedContent.get(validPath)) {
+          console.error(`get_feedback: New feedback already in file (${existingTrimmed.length} chars)`);
+          lastReturnedContent.set(validPath, existingTrimmed);
+          return { content: [{ type: "text", text: existingContent }] };
+        }
+
+        // Promise-based wait: block until feedback arrives via HTTP POST or file change
+        const feedbackPromise = new Promise<string>((resolve) => {
+          pendingFeedbackResolve = resolve;
+        });
+
+        let result: string | null;
+        if (feedbackTimeout > 0) {
+          // Timeout mode: return [WAITING] after feedbackTimeout ms
+          const timeoutPromise = new Promise<null>((resolve) =>
+            setTimeout(() => resolve(null), feedbackTimeout)
+          );
+          result = await Promise.race([feedbackPromise, timeoutPromise]);
+        } else {
+          // Block forever mode (default) — requires client mcp_timeout: "never"
+          result = await feedbackPromise;
+        }
+
+        if (result === null) {
+          pendingFeedbackResolve = null;
+          console.error(`get_feedback: No new feedback after ${feedbackTimeout / 1000}s`);
+          return { content: [{ type: "text", text: '[WAITING] No new feedback yet. Call get_feedback again to continue waiting.' }] };
+        }
+
+        console.error(`get_feedback: Feedback received (${result.length} chars)`);
+        return formatResponseWithHeadTail(result, parsed.data.head, parsed.data.tail);
       }
 
       case "view_media": {
@@ -462,34 +502,46 @@ server.oninitialized = async () => {
 };
 
 // Start server
-// Track spawned feedback UI process for cleanup
-let feedbackUIProcess: ChildProcess | null = null;
 
 function startFeedbackUI() {
-  const __dirname = path.dirname(fileURLToPath(import.meta.url));
-  const serverScript = path.join(__dirname, 'feedback-server.js');
   const feedbackFile = path.join(process.cwd(), 'feedback.md');
+  const feedbackApp = express();
+  feedbackApp.use(express.urlencoded({ extended: true }));
+  feedbackApp.use(express.json());
 
-  feedbackUIProcess = spawn('node', [serverScript, `--port=${uiPort}`, feedbackFile], {
-    stdio: ['ignore', 'ignore', 'inherit'], // inherit stderr for logs, ignore stdin/stdout (MCP uses them)
-    cwd: process.cwd(),
+  feedbackApp.get('/', (_req, res) => {
+    res.type('html').send(FEEDBACK_HTML.replace('FEEDBACK_PATH', feedbackFile));
   });
 
-  feedbackUIProcess.on('error', (err) => {
-    console.error(`Feedback UI failed to start: ${err.message}`);
-    feedbackUIProcess = null;
-  });
-
-  feedbackUIProcess.on('exit', (code) => {
-    if (code !== 0 && code !== null) {
-      console.error(`Feedback UI exited with code ${code}`);
+  feedbackApp.get('/feedback', async (_req, res) => {
+    try {
+      const content = await fs.readFile(feedbackFile, 'utf-8');
+      res.type('text').send(content);
+    } catch {
+      res.type('text').send('');
     }
-    feedbackUIProcess = null;
   });
 
-  console.error(`Feedback UI starting at http://localhost:${uiPort}`);
+  feedbackApp.post('/feedback', async (req, res) => {
+    try {
+      const content = typeof req.body === 'string' ? req.body : (req.body.content ?? '');
+      // Write to file for persistence
+      await fs.writeFile(feedbackFile, content, 'utf-8');
+      // Resolve pending get_feedback Promise directly (no file polling needed)
+      if (content.trim().length > 0) {
+        resolvePendingFeedback(content);
+      }
+      res.json({ ok: true });
+    } catch (err) {
+      res.status(500).json({ error: String(err) });
+    }
+  });
 
-  // Auto-open the browser after a short delay to let the server start
+  feedbackApp.listen(uiPort, () => {
+    console.error(`Feedback UI running at http://localhost:${uiPort}`);
+  });
+
+  // Auto-open the browser after a short delay
   setTimeout(() => {
     const url = `http://localhost:${uiPort}`;
     spawn('open', [url], { stdio: 'ignore' });
@@ -588,10 +640,7 @@ function cleanup() {
   if (cleanedUp) return;
   cleanedUp = true;
   console.error('\nShutting down server...');
-  if (feedbackUIProcess) {
-    feedbackUIProcess.kill();
-    console.error('Stopped feedback UI');
-  }
+
   for (const [watchedPath, watcher] of fileWatchers.entries()) {
     try {
       watcher.close();
