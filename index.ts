@@ -541,10 +541,35 @@ function startFeedbackUI() {
     console.error(`Feedback UI running at http://localhost:${uiPort}`);
   });
 
-  // Auto-open the browser after a short delay
+  // Auto-open the browser after a short delay to let the server start.
+  // On Linux, skip opening in headless/SSH sessions without a display.
   setTimeout(() => {
     const url = `http://localhost:${uiPort}`;
-    spawn('open', [url], { stdio: 'ignore' });
+    if (process.platform === 'linux') {
+      const hasDisplay = process.env.DISPLAY || process.env.WAYLAND_DISPLAY;
+      if (!hasDisplay) {
+        console.error(`No display detected (SSH/headless). Open manually: ${url}`);
+        return;
+      }
+    }
+
+    if (process.platform === 'darwin') {
+      spawn('open', [url], { stdio: 'ignore' }).on('error', () => {
+        console.error(`Failed to open browser. Open manually: ${url}`);
+      });
+      return;
+    }
+
+    if (process.platform === 'win32') {
+      spawn('cmd', ['/c', 'start', '', url], { stdio: 'ignore' }).on('error', () => {
+        console.error(`Failed to open browser. Open manually: ${url}`);
+      });
+      return;
+    }
+
+    spawn('xdg-open', [url], { stdio: 'ignore' }).on('error', () => {
+      console.error(`Failed to open browser. Open manually: ${url}`);
+    });
   }, 1000);
 }
 
