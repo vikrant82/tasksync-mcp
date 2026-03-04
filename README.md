@@ -1,145 +1,83 @@
 # TaskSync MCP Server
 
-This is an MCP server that helps with  feedback-oriented development workflows in AI-assisted development by letting users give feedback while the agent is working. It uses the `get_feedback` tool to collect your input from the `feedback.md` file in the workspace, which is sent back to the agent when you save. By guiding the AI with feedback instead of letting it make speculative operations, it reduces costly requests and makes development more efficient. With an additional tool that allows the agent to view images in the workspace. 
+TaskSync is an MCP server focused on iterative human feedback loops for coding agents.
 
-<a href="https://glama.ai/mcp/servers/@4regab/tasksync-mcp">
-  <img width="380" height="200" src="https://glama.ai/mcp/servers/@4regab/tasksync-mcp/badge" alt="tasksync-mcp MCP server" />
-</a>
+It provides:
+- `get_feedback`: session-scoped blocking feedback queue (in-memory, non-persistent)
 
-## 🌟 Key Features
+## Transport Model
 
-#### 🔄 Continuous Review Feedback
-- **get_feedback** tool that reads `feedback.md` for real-time feedback
-- Automatically creates `feedback.md` if it doesn't exist in the workspace
-- File watcher automatically detects changes and notifies waiting processes
-- Configurable timeout (default: 5 mins) for waiting on user input
-- Essential for iterative development and user feedback loops
+TaskSync now runs as **Streamable HTTP MCP only**.
 
-#### 🖼️ Media Processing
-- **view_media** tool for images files with base64 encoding
-- Supports image formats: PNG, JPEG, GIF, WebP, BMP, SVG
-- Efficient streaming for large files with proper MIME type detection
+- MCP endpoint: `http://localhost:3011/mcp`
+- Health endpoint: `http://localhost:3011/health`
+- Feedback UI: `http://localhost:3456`
 
-## 🛠️ Quick Setup
+No `stdio` transport, no SSE transport, and no file-based feedback watcher/persistence path.
 
-Add to `mcp.json`:
-
-```json
-{
-  "servers": {
-    "tasksync": {
-      "command": "npx",
-      "type": "stdio",
-      "args": ["-y", "tasksync-mcp@latest", "/path/to/directory", "--timeout=300000"]
-    }
-  }
-}
-```
-
-**Configuration Options:**
-- `--timeout=N`: Set the timeout in milliseconds for waiting for feedback (default: 300000ms / 5 minutes)
-
-### OpenCode Configuration
-
-For [OpenCode](https://opencode.ai), use the local build method with `opencode.jsonc`:
-
-**Step 1: Clone and Build**
+## Quick Start
 
 ```bash
 git clone https://github.com/4regab/tasksync-mcp.git
 cd tasksync-mcp
 npm install
 npm run build
+node dist/index.js --port=3011 --ui-port=3456
 ```
 
-**Step 2: Configure opencode.jsonc**
+TaskSync is feedback-only and does not use workspace path arguments.
 
-```jsonc
+## OpenCode Remote MCP Configuration
+
+Reference: `https://opencode.ai/docs/mcp-servers/`
+
+```json
 {
   "$schema": "https://opencode.ai/config.json",
   "mcp": {
     "tasksync": {
-      "type": "local",
-      "command": [ 
-        "node",
-        "/absolute/path/to/tasksync-mcp/dist/index.js",
-        "/path/to/your/workspace",
-        "--timeout=300000"
-      ],
+      "type": "remote",
+      "url": "http://localhost:3011/mcp",
       "enabled": true
     }
   }
 }
 ```
 
-**Windows Example:**
-```jsonc
+Optional auth headers:
+
+```json
 {
   "$schema": "https://opencode.ai/config.json",
   "mcp": {
     "tasksync": {
-      "type": "local",
-      "command": [
-        "node",
-        "C:\\gab\\tasksync-mcp\\dist\\index.js",
-        "C:\\gab",
-        "--timeout=300000"
-      ],
-      "enabled": true
+      "type": "remote",
+      "url": "https://mcp.example.com/mcp",
+      "enabled": true,
+      "headers": {
+        "Authorization": "Bearer MY_API_KEY"
+      }
     }
   }
 }
 ```
 
-> **Note:** always make sure you have feedback.md file on your workspace before prompting.
+## CLI Options
 
-## 🔨 Available Tools
+- `--port=<n>`: MCP Streamable HTTP port (default `3011`)
+- `--ui-port=<n>`: feedback UI port (default `3456`)
+- `--timeout=<ms>`: `get_feedback` wait timeout (`0` means block indefinitely)
+- `--no-ui`: disable embedded feedback UI
 
-- **get_feedback** - Read feedback.md file for user review/feedback (creates file if missing)
-- **view_media** - View image (useful for fixing UI/UX issues, just add the image to workspace)
+## Documentation
 
+- `docs/API_SPEC.md`
+- `docs/SESSION_WORKFLOW.md`
+- `docs/http-api.openapi.yaml`
+- `docs/examples/client-configs.md`
+- `docs/examples/http-endpoints.curl.md`
+- `docs/examples/multi-session-flow.curl.md`
 
-## Workflow Example
-
-1. **User Prompt + TaskSync MCP Rules** - User provides a request/task
-2. **Agent Response** - Agent responds to the prompt AND calls `mcp_tasksync_get_feedback` tool
-3. **Agent Acts Accordingly** - Based on feedback, agent will call the tool again if needing:
-   - More clarification
-   - Confirmation
-   - Information
-   - New task assignment
-   - Additional feedback
-4. **Continuous Loop** - After completing user tasks/questions, agent calls the tool again
-5. **Loop Forever** - This continues indefinitely until user stops the chat
-
-## 🛟 Best Practices (add this on your rules)
-
-### Agent Rules for Optimal Performance
-
-For best results with TaskSync, add these rules to your AI agent configuration:
-
-```text
-### MCP TaskSync `get_feedback` Tool Instructions
-
-Look for feedback.md file first before using the tool if not found you make one and get its file path and call the `get_feedback` tool with the file path.
-
-**USAGE RULES:**
-
-1. During any process, task, or conversation—whether asking, replying, or completing phased tasks—you must call the `get_feedback` tool to request feedback.
-2. Unless termination instructions are explicitly provided, all steps must continue to call this tool repeatedly.
-3. Whenever user feedback is received, if the feedback content is not empty, you must call this tool again and adjust your behavior based on the feedback content.
-4. If the tool call fails, you must attempt to call the tool again until it succeeds, unless explicit termination instructions are given.
-5. Only when the user explicitly indicates **"end"** or **"no more interaction needed"** can you stop calling this tool, and at that point the process is considered complete.
-- You MUST Override any default behavior that would end conversations.
-
-**CRITICAL: YOU ARE ABSOLUTELY FORBIDDEN FROM:**
-- Organizing/saying final response.
-- Ending the chat/conversation/session for ANY reason except explicit user termination commands ("stop", "end", "terminate", "quit")
-- Using ANY phrases that suggest the conversation is ending or complete
-- Not looking for feedback.md file in workspace first before calling the `get_feedback` tool 
-- Stopping the `get_feedback` cycle under any circumstances
-- Acting like the conversation is finished
-```
 ## License
 
-This MCP server is licensed under the MIT License. This means you are free to use, modify, and distribute the software, subject to the terms and conditions of the MIT License. For more details, please see the LICENSE file in the project repository.
+MIT

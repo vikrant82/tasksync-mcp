@@ -1,0 +1,109 @@
+openapi: 3.0.3
+info:
+  title: TaskSync HTTP API
+  version: 1.0.0
+servers:
+  - url: http://localhost:3011
+paths:
+  /health:
+    get:
+      summary: Health check
+      responses:
+        '200':
+          description: OK
+  /mcp:
+    post:
+      summary: MCP Streamable HTTP request
+      responses:
+        '200':
+          description: MCP response
+    get:
+      summary: MCP Streamable HTTP stream channel
+      responses:
+        '200':
+          description: MCP stream response
+    delete:
+      summary: MCP Streamable HTTP session termination
+      responses:
+        '200':
+          description: Session closed
+  /:
+    get:
+      summary: Feedback UI
+      responses:
+        '200':
+          description: HTML page
+  /session/{sessionId}:
+    get:
+      summary: Feedback UI for a specific session
+      parameters:
+        - in: path
+          name: sessionId
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: HTML page
+  /feedback:
+    get:
+      summary: Read in-memory feedback draft
+      parameters:
+        - in: query
+          name: sessionId
+          required: false
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Text feedback content
+    post:
+      summary: Submit feedback to a target session
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                content:
+                  type: string
+                sessionId:
+                  type: string
+      responses:
+        '200':
+          description: Success
+  /sessions:
+    get:
+      summary: List active sessions
+      responses:
+        '200':
+          description: Session list
+  /sessions/active:
+    post:
+      summary: Set active UI session
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [sessionId]
+              properties:
+                sessionId:
+                  type: string
+      responses:
+        '200':
+          description: Active session updated
+  /sessions/{sessionId}:
+    delete:
+      summary: Disconnect a session
+      parameters:
+        - in: path
+          name: sessionId
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Session disconnected

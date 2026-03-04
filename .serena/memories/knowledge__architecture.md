@@ -1,0 +1,21 @@
+# Architecture Notes
+- Entrypoint: `index.ts` -> compiled to `dist/index.js`.
+- Core MCP tools:
+  - `get_feedback`: blocking wait for user feedback; session-scoped in memory.
+- Feedback flow:
+  - UI endpoint `/feedback` accepts content.
+  - Content is stored in-memory per session (non-persistent).
+  - In-memory promise resolver unblocks pending `get_feedback` for the target session.
+- Session model (Streamable HTTP):
+  - Endpoint: `/mcp` (POST/GET/DELETE).
+  - Session transport keyed by MCP `mcp-session-id`.
+  - Session registry map stores per-session transport/server and activity timestamps.
+  - Manual session management endpoints in UI server: `GET /sessions`, `POST /sessions/active`, `DELETE /sessions/:sessionId`, `GET /session/:sessionId`.
+- File/path safety:
+  - Feedback-only runtime does not perform workspace path validation.
+  - Legacy path utility modules remain in repo but are not part of active MCP flow.
+- Modules:
+  - `lib.ts`: path validation and file IO helpers.
+  - `path-utils.ts`, `path-validation.ts`, `roots-utils.ts`: path normalization and root checks.
+  - `feedback-html.ts`: embedded UI template.
+  - `feedback-server.ts`: standalone UI server variant.

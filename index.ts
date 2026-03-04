@@ -1,126 +1,55 @@
 #!/usr/bin/env node
 
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
-import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import { SSEServerTransport } from "@modelcontextprotocol/sdk/server/sse.js";
+import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import {
   CallToolRequestSchema,
   ListToolsRequestSchema,
-  RootsListChangedNotificationSchema,
-  type Root,
+  isInitializeRequest,
 } from "@modelcontextprotocol/sdk/types.js";
-import fs from "fs/promises";
-import { createReadStream, watch, FSWatcher } from "fs";
-import path from "path";
 import { spawn } from "child_process";
+import { randomUUID } from "crypto";
 import { z } from "zod";
 import { zodToJsonSchema } from "zod-to-json-schema";
 import express from "express";
-import { normalizePath, expandHome } from './path-utils.js';
-import { getValidRootDirectories } from './roots-utils.js';
-import {
-  validatePath,
-  readFileContent,
-  tailFile,
-  headFile,
-  setAllowedDirectories,
-} from './lib.js';
-import { FEEDBACK_HTML } from './feedback-html.js';
+import { FEEDBACK_HTML } from "./feedback-html.js";
 
-const DEFAULT_TIMEOUT = 0; // 0 = block forever (requires mcp_timeout: "never" on client); >0 = return [WAITING] after N ms
-// Parse configuration from environment variables or command line
+const DEFAULT_TIMEOUT = 0; // 0 = block forever; >0 = return [WAITING] after N ms
 
-// Command line argument parsing with embedded mode support
 const args = process.argv.slice(2);
-const useSSE = args.includes('--sse');
-const noUI = args.includes('--no-ui');
-const ssePort = parseInt(args.find(arg => arg.startsWith('--port='))?.split('=')[1] || '3001');
-const uiPortArg = args.find(arg => arg.startsWith('--ui-port='));
-const uiPort = parseInt(uiPortArg?.split('=')[1] || process.env.FEEDBACK_PORT || '3456');
-const directoryArgs = args.filter(arg =>
-  !['--sse', '--embedded', '--stdio', '--no-ui'].some(flag => arg.startsWith(flag)) &&
-  !arg.startsWith('--port=') &&
-  !arg.startsWith('--ui-port=') &&
-  !arg.startsWith('--timeout=')
-);
-const timeoutArg = args.find(arg => arg.startsWith('--timeout='));
-const parsedTimeout = timeoutArg ? parseInt(timeoutArg.split('=')[1]) : NaN;
-const feedbackTimeout = !isNaN(parsedTimeout) ? parsedTimeout : DEFAULT_TIMEOUT;
+const noUI = args.includes("--no-ui");
+const mcpPort = parseInt(args.find((arg) => arg.startsWith("--port="))?.split("=")[1] || "3011", 10);
+const uiPortArg = args.find((arg) => arg.startsWith("--ui-port="));
+const uiPort = parseInt(uiPortArg?.split("=")[1] || process.env.FEEDBACK_PORT || "3456", 10);
+const timeoutArg = args.find((arg) => arg.startsWith("--timeout="));
+const parsedTimeout = timeoutArg ? parseInt(timeoutArg.split("=")[1], 10) : NaN;
+const feedbackTimeout = Number.isNaN(parsedTimeout) ? DEFAULT_TIMEOUT : parsedTimeout;
 
-// Store allowed directories in normalized and resolved form
-let allowedDirectories: string[] = [];
+const DEFAULT_FEEDBACK_SESSION = "__default__";
 
-// Auto-detect current directory if no directories provided
-allowedDirectories = directoryArgs.length === 0
-  ? [normalizePath(process.cwd())]
-  : await Promise.all(directoryArgs.map(async (dir) => {
-    const absolute = path.resolve(expandHome(dir));
-    try {
-      return normalizePath(await fs.realpath(absolute));
-    } catch {
-      return normalizePath(absolute);
-    }
-  }));
+type FeedbackChannelState = {
+  pendingFeedbackResolve: ((content: string) => void) | null;
+  queuedFeedback: string | null;
+  latestFeedback: string;
+};
 
-directoryArgs.length === 0 && console.error(`Auto-detected allowed directory: ${allowedDirectories[0]}`);
+type StreamableSessionEntry = {
+  transport: StreamableHTTPServerTransport;
+  server: Server;
+  createdAt: string;
+  lastActivityAt: string;
+};
 
-// Validate that all directories exist and are accessible
-await Promise.all(allowedDirectories.map(async (dir) => {
-  try {
-    const stats = await fs.stat(dir);
-    if (!stats.isDirectory()) throw new Error(`${dir} is not a directory`);
-  } catch (error) {
-    console.error(`Error accessing directory ${dir}:`, error);
-    process.exit(1);
-  }
-}));
-
-// Initialize the global allowedDirectories in lib.ts
-setAllowedDirectories(allowedDirectories);
-
-// File watching state for check_review (support multiple files)
-const lastFileModifiedByPath: Map<string, number> = new Map();
-const fileWatchers: Map<string, FSWatcher> = new Map();
-const connectedTransports: Set<SSEServerTransport> = new Set();
-
-// Track last-returned content per path to detect actual content changes (not mtime-based)
-const lastReturnedContent: Map<string, string> = new Map();
-
-// Long-poll settings (used only as fallback when feedbackTimeout > 0)
-const INTERNAL_POLL_MS = 3000;
-
-// Promise-based feedback channel — resolves when user submits via HTTP or file edit
-let pendingFeedbackResolve: ((content: string) => void) | null = null;
-let queuedFeedback: string | null = null;
-
-function resolvePendingFeedback(content: string): boolean {
-  if (pendingFeedbackResolve) {
-    const resolve = pendingFeedbackResolve;
-    pendingFeedbackResolve = null;
-    resolve(content);
-    return true;
-  }
-  // No pending request — queue for next get_feedback call
-  queuedFeedback = content;
-  return false;
-}
-
-// Lazy initialization state
-let isInitialized = false;
-
-// Schema definitions
+const feedbackStateBySession = new Map<string, FeedbackChannelState>();
+const streamableSessions = new Map<string, StreamableSessionEntry>();
+let activeUiSessionId = DEFAULT_FEEDBACK_SESSION;
 
 const AskReviewArgsSchema = z.object({
-  path: z.string().optional().describe('Absolute or relative path to the feedback file within allowed directories. Defaults to feedback.md in the current working directory.'),
-  tail: z.number().optional().describe('If provided, returns only the last N lines of the review file'),
-  head: z.number().optional().describe('If provided, returns only the first N lines of the review file')
+  path: z.string().optional().describe("Deprecated. Ignored in in-memory mode."),
+  tail: z.number().optional().describe("Optional: last N lines of returned feedback text."),
+  head: z.number().optional().describe("Optional: first N lines of returned feedback text."),
 });
 
-const ReadImageFileArgsSchema = z.object({
-  path: z.string()
-});
-
-// Define ToolInput type for JSON Schema objects returned by zodToJsonSchema
 type ToolInput = {
   type: "object";
   properties?: Record<string, unknown>;
@@ -128,410 +57,219 @@ type ToolInput = {
   [key: string]: unknown;
 };
 
-function formatResponseWithHeadTail(content: string, head?: number, tail?: number): { content: { type: "text", text: string }[] } {
+function getSessionId(rawSessionId?: string): string {
+  return rawSessionId && rawSessionId.trim().length > 0 ? rawSessionId : DEFAULT_FEEDBACK_SESSION;
+}
+
+function getFeedbackState(sessionId: string): FeedbackChannelState {
+  const existing = feedbackStateBySession.get(sessionId);
+  if (existing) return existing;
+
+  const created: FeedbackChannelState = {
+    pendingFeedbackResolve: null,
+    queuedFeedback: null,
+    latestFeedback: "",
+  };
+  feedbackStateBySession.set(sessionId, created);
+  return created;
+}
+
+function formatResponseWithHeadTail(content: string, head?: number, tail?: number): { content: { type: "text"; text: string }[] } {
   if (head && tail) {
     throw new Error("Cannot specify both head and tail parameters simultaneously");
   }
 
-  if (tail) {
-    const lines = content.split('\n');
-    const tailLines = lines.slice(-tail);
+  const lines = content.split("\n");
+  const selected = tail ? lines.slice(-tail) : head ? lines.slice(0, head) : lines;
+  return { content: [{ type: "text", text: selected.join("\n") }] };
+}
+
+function resolvePendingFeedback(content: string, rawSessionId?: string): boolean {
+  const sessionId = getSessionId(rawSessionId);
+  const state = getFeedbackState(sessionId);
+  state.latestFeedback = content;
+
+  if (state.pendingFeedbackResolve) {
+    const resolve = state.pendingFeedbackResolve;
+    state.pendingFeedbackResolve = null;
+    resolve(content);
+    return true;
+  }
+
+  state.queuedFeedback = content;
+  return false;
+}
+
+function registerServerHandlers(targetServer: Server) {
+  targetServer.setRequestHandler(ListToolsRequestSchema, async () => {
     return {
-      content: [{ type: "text", text: tailLines.join('\n') }],
+      tools: [
+        {
+          name: "get_feedback",
+          description:
+            "Wait for human feedback in a session-scoped in-memory queue. " +
+            "This call blocks until feedback is submitted from the TaskSync UI or timeout is reached.",
+          inputSchema: zodToJsonSchema(AskReviewArgsSchema, { target: "openApi3" }) as ToolInput,
+        },
+      ],
     };
-  }
-
-  if (head) {
-    const lines = content.split('\n');
-    const headLines = lines.slice(0, head);
-    return {
-      content: [{ type: "text", text: headLines.join('\n') }],
-    };
-  }
-
-  return {
-    content: [{ type: "text", text: content }],
-  };
-}
-
-// Server setup
-
-const server = new Server(
-  {
-    name: "tasksync-server",
-    version: "1.0.0",
-  },
-  {
-    capabilities: {
-      tools: {},
-      logging: {}, // Enable logging for notifications
-    },
-  },
-);
-
-// Lazy initialization for file watcher
-async function ensureInitialized() {
-  if (isInitialized) return;
-  console.error("Initializing TaskSync server components...");
-  const feedbackFile = path.join(process.cwd(), 'feedback.md');
-  await setupFileWatcher(feedbackFile, true);
-  // Seed lastReturnedContent with existing file content so stale content isn't treated as new
-  try {
-    const validFeedbackPath = await validatePath(feedbackFile);
-    const existingContent = await readFileContent(validFeedbackPath);
-    const trimmed = existingContent.trim();
-    if (trimmed.length > 0) {
-      lastReturnedContent.set(validFeedbackPath, trimmed);
-      console.error(`Seeded lastReturnedContent for ${validFeedbackPath} (${trimmed.length} chars)`);
-    }
-  } catch { /* file might not exist yet, that's fine */ }
-  isInitialized = true;
-  console.error("TaskSync server initialized successfully");
-}
-
-// File watching functions
-async function setupFileWatcher(filePath: string, createIfMissing: boolean = false) {
-  try {
-    // Check if file exists, create if it doesn't
-    try {
-      await fs.access(filePath);
-      console.error(`File exists: ${filePath}`);
-    } catch {
-      if (!createIfMissing) {
-        console.error(`File does not exist, skipping watcher: ${filePath}`);
-        return;
-      }
-      console.error(`Creating file: ${filePath}`);
-      await fs.mkdir(path.dirname(filePath), { recursive: true });
-      await fs.writeFile(filePath, 'No review content yet.');
-    }
-
-    // Get initial modification time and setup watcher
-    const stats = await fs.stat(filePath);
-    const mtime = stats.mtime.getTime();
-    lastFileModifiedByPath.set(filePath, mtime);
-    console.error(`Initial file modification time for ${filePath}: ${mtime}`);
-
-    if (!fileWatchers.has(filePath)) {
-      const watcher = watch(filePath, async (eventType) => {
-        console.error(`File watcher event: ${eventType} for ${filePath}`);
-        // Handle both 'change' and 'rename' events — macOS editors often emit 'rename' for atomic saves
-        if (eventType === 'change' || eventType === 'rename') {
-          await notifyClientsOfFileChange(filePath);
-        }
-      });
-      fileWatchers.set(filePath, watcher);
-      console.error(`File watcher setup successfully for: ${filePath}`);
-    }
-  } catch (error) {
-    console.error(`Failed to setup file watcher: ${error}`);
-    throw error;
-  }
-}
-
-async function notifyClientsOfFileChange(filePath: string) {
-  try {
-    const stats = await fs.stat(filePath);
-    const currentModified = stats.mtime.getTime();
-
-    if (lastFileModifiedByPath.get(filePath) === currentModified) return;
-
-    console.error(`File change detected for ${filePath}: ${lastFileModifiedByPath.get(filePath)} -> ${currentModified}`);
-    lastFileModifiedByPath.set(filePath, currentModified);
-    const content = await readFileContent(filePath);
-
-    // Resolve pending get_feedback Promise if file content is new
-    const trimmed = content.trim();
-    const lastContent = lastReturnedContent.get(filePath);
-    if (trimmed.length > 0 && trimmed !== lastContent) {
-      lastReturnedContent.set(filePath, trimmed);
-      resolvePendingFeedback(content);
-    }
-
-    // Send notifications to all connected SSE clients
-    const notifications = connectedTransports.size;
-    await Promise.allSettled([...connectedTransports].map(transport =>
-      transport.send({
-        jsonrpc: "2.0",
-        method: "notifications/message",
-        params: {
-          level: "info",
-          logger: "tasksync-server",
-          data: {
-            type: "file_changed",
-            path: path.relative(process.cwd(), filePath) || filePath,
-            content,
-            timestamp: new Date().toISOString()
-          }
-        }
-      }).catch(error => console.error(`Failed to send notification to client: ${error}`))
-    ));
-
-    console.error(`File change notification sent to ${notifications} SSE clients for ${filePath}`);
-  } catch (error) {
-    console.error(`Error in notifyClientsOfFileChange: ${error}`);
-  }
-}
-
-// Reads a file as a stream of buffers, concatenates them, and then encodes
-// the result to a Base64 string. This is a memory-efficient way to handle
-// binary data from a stream before the final encoding.
-async function readFileAsBase64Stream(filePath: string): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const stream = createReadStream(filePath);
-    const chunks: Buffer[] = [];
-    stream.on('data', (chunk) => {
-      chunks.push(chunk as Buffer);
-    });
-    stream.on('end', () => {
-      const finalBuffer = Buffer.concat(chunks);
-      resolve(finalBuffer.toString('base64'));
-    });
-    stream.on('error', (err) => reject(err));
   });
-}
 
-// Tool handlers
-server.setRequestHandler(ListToolsRequestSchema, async () => {
-  return {
-    tools: [
-      {
-        name: "get_feedback",
-        description:
-          "Read the contents of a feedback.md file (defaults to ./feedback.md). Before calling this tool you must seearch for the feedback.md file." +
-          "If the feedback file does not exist, you will automatically create an empty feedback.md file before attempting to use this tool. " +
-          "During any process, task, or conversation, whether asking, replying, or completing phased tasks, you must call this tool to check for review. " +
-          "Only when the user explicitly indicates <end or no more interaction needed> can you stop calling this tool, and the process is considered complete.\n\n" +
-          "MANDATORY USAGE RULES -PRIMARY DIRECTIVE:\n" +
-          "1. CONTINUOUS FEEDBACK LOOP: During any process, task, or conversation, whether asking, replying, or completing phased tasks, you MUST call this tool to check for feedback.\n" +
-          "2. NO STOPPING WITHOUT PERMISSION: Unless receiving explicit termination instructions (\"end\", \"stop\", \"no more interaction needed\"), ALL steps must repeatedly call this tool.\n" +
-          "3. RESPOND TO FEEDBACK: Whenever user feedback is received, if the feedback content is not empty, you MUST call this tool again and adjust behavior based on the feedback content.\n" +
-          "4. TERMINATION CONDITIONS: Only when the user explicitly indicates \"end\", \"stop\", \"finished\", or \"no more interaction needed\" can you stop calling this tool.\n" +
-          "5. PROVIDE CONTEXT: You should summarize what you have done and provide project context to help the user provide meaningful feedback for the next step.\n" +
-          "6. KEEP ITERATING: If the user provides feedback, suggestions, or asks questions, continue the feedback loop by calling this tool again after addressing their input.\n" +
-          "7. NEVER ASSUME COMPLETION: Do not assume a task is complete without explicit user confirmation through this feedback mechanism.\n\n",
-
-        inputSchema: zodToJsonSchema(AskReviewArgsSchema, { target: "openApi3" }) as ToolInput,
-      },
-      {
-        name: "view_media",
-        description:
-          "Read an image file. Returns the base64 encoded data and MIME type. " +
-          "Only works within allowed directories.\n\n" +
-          "SUPPORTED FORMATS:\n" +
-          "Images: PNG, JPEG, GIF, WebP, BMP, SVG\n\n" +
-          "USAGE:\n" +
-          "Use this tool to read and encode image files for analysis, display, or processing. " +
-          "The tool streams files efficiently and returns base64-encoded data with proper MIME type detection.\n\n" +
-          "Args:\n" +
-          "    path: Absolute or relative path to the image file within allowed directories",
-        inputSchema: zodToJsonSchema(ReadImageFileArgsSchema, { target: "openApi3" }) as ToolInput,
-      },
-    ],
-  };
-});
-
-server.setRequestHandler(CallToolRequestSchema, async (request) => {
-  try {
-    // Ensure server is initialized on first tool call
-    await ensureInitialized();
-
-    const { name, arguments: args } = request.params;
-
-    switch (name) {
-      case "get_feedback": {
-        const parsed = AskReviewArgsSchema.safeParse(args);
-        if (!parsed.success) {
-          throw new Error(`Invalid arguments for get_feedback: ${parsed.error}`);
-        }
-        // Determine path: use provided path if any, else default to ./feedback.md
-        const targetPath = parsed.data.path || path.join(process.cwd(), 'feedback.md');
-
-        // Create feedback.md file if it doesn't exist (only for default feedback.md, not custom paths)
-        if (!parsed.data.path) {
-          try {
-            await fs.access(targetPath);
-          } catch (error) {
-            if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
-              try {
-                await fs.writeFile(targetPath, '', 'utf-8');
-                console.error(`Created missing feedback file: ${targetPath}`);
-              } catch (writeError) {
-                console.error(`Failed to create feedback file: ${writeError}`);
-                throw new Error(`Could not create feedback file: ${targetPath}`);
-              }
-            }
-          }
-        }
-
-        const validPath = await validatePath(targetPath);
-
-        if (parsed.data.head && parsed.data.tail) {
-          throw new Error("Cannot specify both head and tail parameters simultaneously");
-        }
-
-        // Check for queued feedback (arrived between get_feedback calls)
-        if (queuedFeedback !== null) {
-          const content = queuedFeedback;
-          queuedFeedback = null;
-          console.error(`get_feedback: Returning queued feedback (${content.length} chars)`);
-          return formatResponseWithHeadTail(content, parsed.data.head, parsed.data.tail);
-        }
-
-        // Check if file already has new content
-        const existingContent = parsed.data.tail ? await tailFile(validPath, parsed.data.tail)
-          : parsed.data.head ? await headFile(validPath, parsed.data.head)
-            : await readFileContent(validPath);
-        const existingTrimmed = existingContent.trim();
-        if (existingTrimmed.length > 0 && existingTrimmed !== lastReturnedContent.get(validPath)) {
-          console.error(`get_feedback: New feedback already in file (${existingTrimmed.length} chars)`);
-          lastReturnedContent.set(validPath, existingTrimmed);
-          return { content: [{ type: "text", text: existingContent }] };
-        }
-
-        // Promise-based wait: block until feedback arrives via HTTP POST or file change
-        const feedbackPromise = new Promise<string>((resolve) => {
-          pendingFeedbackResolve = resolve;
-        });
-
-        let result: string | null;
-        if (feedbackTimeout > 0) {
-          // Timeout mode: return [WAITING] after feedbackTimeout ms
-          const timeoutPromise = new Promise<null>((resolve) =>
-            setTimeout(() => resolve(null), feedbackTimeout)
-          );
-          result = await Promise.race([feedbackPromise, timeoutPromise]);
-        } else {
-          // Block forever mode (default) — requires client mcp_timeout: "never"
-          result = await feedbackPromise;
-        }
-
-        if (result === null) {
-          pendingFeedbackResolve = null;
-          console.error(`get_feedback: No new feedback after ${feedbackTimeout / 1000}s`);
-          return { content: [{ type: "text", text: '[WAITING] No new feedback yet. Call get_feedback again to continue waiting.' }] };
-        }
-
-        console.error(`get_feedback: Feedback received (${result.length} chars)`);
-        return formatResponseWithHeadTail(result, parsed.data.head, parsed.data.tail);
-      }
-
-      case "view_media": {
-        const parsed = ReadImageFileArgsSchema.safeParse(args);
-        if (!parsed.success) {
-          throw new Error(`Invalid arguments for view_media: ${parsed.error}`);
-        }
-        const validPath = await validatePath(parsed.data.path);
-        const extension = path.extname(validPath).toLowerCase();
-        const mimeTypes: Record<string, string> = {
-          ".png": "image/png",
-          ".jpg": "image/jpeg",
-          ".jpeg": "image/jpeg",
-          ".gif": "image/gif",
-          ".webp": "image/webp",
-          ".bmp": "image/bmp",
-          ".svg": "image/svg+xml",
-        };
-        const mimeType = mimeTypes[extension] || "application/octet-stream";
-        const data = await readFileAsBase64Stream(validPath);
-        const type = mimeType.startsWith("image/") ? "image" : "blob";
-        return {
-          content: [{ type, data, mimeType }],
-        };
-      }
-
-      default:
-        throw new Error(`Unknown tool: ${name}`);
-    }
-  } catch (error) {
-    const errorMessage = error instanceof Error ? error.message : String(error);
-    return {
-      content: [{ type: "text", text: `Error: ${errorMessage}` }],
-      isError: true,
-    };
-  }
-});
-
-// Updates allowed directories based on MCP client roots
-async function updateAllowedDirectoriesFromRoots(requestedRoots: Root[]) {
-  const validatedRootDirs = await getValidRootDirectories(requestedRoots);
-  if (validatedRootDirs.length > 0) {
-    allowedDirectories = [...validatedRootDirs];
-    setAllowedDirectories(allowedDirectories); // Update the global state in lib.ts
-    console.error(`Updated allowed directories from MCP roots: ${validatedRootDirs.length} valid directories`);
-  } else {
-    console.error("No valid root directories provided by client");
-  }
-}
-
-// Handles dynamic roots updates during runtime, when client sends "roots/list_changed" notification, server fetches the updated roots and replaces all allowed directories with the new roots.
-server.setNotificationHandler(RootsListChangedNotificationSchema, async () => {
-  try {
-    // Request the updated roots list from the client
-    const response = await server.listRoots();
-    if (response && 'roots' in response) {
-      await updateAllowedDirectoriesFromRoots(response.roots);
-    }
-  } catch (error) {
-    console.error("Failed to request roots from client:", error instanceof Error ? error.message : String(error));
-  }
-});
-
-// Handles post-initialization setup, specifically checking for and fetching MCP roots.
-server.oninitialized = async () => {
-  const clientCapabilities = server.getClientCapabilities();
-
-  if (clientCapabilities?.roots) {
+  targetServer.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
     try {
-      const response = await server.listRoots();
-      if (response && 'roots' in response) {
-        await updateAllowedDirectoriesFromRoots(response.roots);
-      } else {
-        console.error("Client returned no roots set, keeping current settings");
+      const { name, arguments: args } = request.params;
+      const sessionId = getSessionId(extra?.sessionId);
+      activeUiSessionId = sessionId;
+      const feedbackState = getFeedbackState(sessionId);
+
+      switch (name) {
+        case "get_feedback": {
+          const parsed = AskReviewArgsSchema.safeParse(args);
+          if (!parsed.success) {
+            throw new Error(`Invalid arguments for get_feedback: ${parsed.error}`);
+          }
+
+          if (feedbackState.queuedFeedback !== null) {
+            const content = feedbackState.queuedFeedback;
+            feedbackState.queuedFeedback = null;
+            return formatResponseWithHeadTail(content, parsed.data.head, parsed.data.tail);
+          }
+
+          const feedbackPromise = new Promise<string>((resolve) => {
+            feedbackState.pendingFeedbackResolve = resolve;
+          });
+
+          let result: string | null;
+          if (feedbackTimeout > 0) {
+            const timeoutPromise = new Promise<null>((resolve) =>
+              setTimeout(() => resolve(null), feedbackTimeout)
+            );
+            result = await Promise.race([feedbackPromise, timeoutPromise]);
+          } else {
+            result = await feedbackPromise;
+          }
+
+          if (result === null) {
+            feedbackState.pendingFeedbackResolve = null;
+            return {
+              content: [{ type: "text", text: "[WAITING] No new feedback yet. Call get_feedback again to continue waiting." }],
+            };
+          }
+
+          return formatResponseWithHeadTail(result, parsed.data.head, parsed.data.tail);
+        }
+
+        default:
+          throw new Error(`Unknown tool: ${name}`);
       }
     } catch (error) {
-      console.error("Failed to request initial roots from client:", error instanceof Error ? error.message : String(error));
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      return {
+        content: [{ type: "text", text: `Error: ${errorMessage}` }],
+        isError: true,
+      };
     }
-  } else {
-    if (allowedDirectories.length > 0) {
-      console.error("Client does not support MCP Roots, using allowed directories set from server args:", allowedDirectories);
-    } else {
-      throw new Error(`Server cannot operate: No allowed directories available. Server was started without command-line directories and client either does not support MCP roots protocol or provided empty roots. Please either: 1) Start server with directory arguments, or 2) Use a client that supports MCP roots protocol and provides valid root directories.`);
-    }
-  }
-};
+  });
 
-// Start server
+  targetServer.oninitialized = async () => {
+    // Intentionally no MCP roots/path handling in feedback-only mode.
+  };
+}
+
+function createSessionServer(): Server {
+  const sessionServer = new Server(
+    { name: "tasksync-server", version: "1.0.0" },
+    { capabilities: { tools: {}, logging: {} } }
+  );
+  registerServerHandlers(sessionServer);
+  return sessionServer;
+}
 
 function startFeedbackUI() {
-  const feedbackFile = path.join(process.cwd(), 'feedback.md');
+  const uiBaseUrl = `http://localhost:${uiPort}`;
   const feedbackApp = express();
   feedbackApp.use(express.urlencoded({ extended: true }));
   feedbackApp.use(express.json());
 
-  feedbackApp.get('/', (_req, res) => {
-    res.type('html').send(FEEDBACK_HTML.replace('FEEDBACK_PATH', feedbackFile));
+  const html = FEEDBACK_HTML.replace("FEEDBACK_PATH", "in-memory feedback queue (non-persistent)");
+
+  feedbackApp.get("/", (_req, res) => {
+    res.type("html").send(html);
   });
 
-  feedbackApp.get('/feedback', async (_req, res) => {
+  feedbackApp.get("/session/:sessionId", (_req, res) => {
+    res.type("html").send(html);
+  });
+
+  feedbackApp.get("/feedback", (req, res) => {
+    const querySession = typeof req.query.sessionId === "string" ? req.query.sessionId : "";
+    const targetSessionId = querySession.trim() || activeUiSessionId;
+    const state = getFeedbackState(getSessionId(targetSessionId));
+    res.type("text").send(state.latestFeedback || "");
+  });
+
+  feedbackApp.get("/sessions", (_req, res) => {
+    const sessions = Array.from(streamableSessions.entries()).map(([sessionId, entry]) => {
+      const state = getFeedbackState(sessionId);
+      return {
+        sessionId,
+        sessionUrl: `${uiBaseUrl}/session/${encodeURIComponent(sessionId)}`,
+        createdAt: entry.createdAt,
+        lastActivityAt: entry.lastActivityAt,
+        waitingForFeedback: Boolean(state.pendingFeedbackResolve),
+        hasQueuedFeedback: Boolean(state.queuedFeedback),
+      };
+    });
+
+    res.json({ activeUiSessionId, sessions });
+  });
+
+  feedbackApp.post("/sessions/active", (req, res) => {
+    const sessionId = typeof req.body?.sessionId === "string" ? req.body.sessionId.trim() : "";
+    if (!sessionId || !streamableSessions.has(sessionId)) {
+      res.status(400).json({ error: "Unknown sessionId" });
+      return;
+    }
+
+    activeUiSessionId = sessionId;
+    res.json({ ok: true, activeUiSessionId });
+  });
+
+  feedbackApp.delete("/sessions/:sessionId", async (req, res) => {
+    const sessionId = req.params.sessionId;
+    const session = streamableSessions.get(sessionId);
+    if (!session) {
+      res.status(404).json({ error: "Session not found" });
+      return;
+    }
+
     try {
-      const content = await fs.readFile(feedbackFile, 'utf-8');
-      res.type('text').send(content);
-    } catch {
-      res.type('text').send('');
+      await session.transport.close();
+      streamableSessions.delete(sessionId);
+      feedbackStateBySession.delete(sessionId);
+      if (activeUiSessionId === sessionId) {
+        activeUiSessionId = DEFAULT_FEEDBACK_SESSION;
+      }
+      res.json({ ok: true });
+    } catch (error) {
+      res.status(500).json({ error: String(error) });
     }
   });
 
-  feedbackApp.post('/feedback', async (req, res) => {
+  feedbackApp.post("/feedback", (req, res) => {
     try {
-      const content = typeof req.body === 'string' ? req.body : (req.body.content ?? '');
-      // Write to file for persistence
-      await fs.writeFile(feedbackFile, content, 'utf-8');
-      // Resolve pending get_feedback Promise directly (no file polling needed)
+      const content = typeof req.body === "string" ? req.body : req.body.content ?? "";
+      const requestedSessionId = typeof req.body?.sessionId === "string" ? req.body.sessionId.trim() : "";
+      const targetSessionId = requestedSessionId || activeUiSessionId;
+      const normalizedSessionId = getSessionId(targetSessionId);
+
+      const state = getFeedbackState(normalizedSessionId);
+      state.latestFeedback = content;
       if (content.trim().length > 0) {
-        resolvePendingFeedback(content);
+        resolvePendingFeedback(content, normalizedSessionId);
       }
-      res.json({ ok: true });
+
+      res.json({ ok: true, sessionId: normalizedSessionId });
     } catch (err) {
       res.status(500).json({ error: String(err) });
     }
@@ -541,11 +279,9 @@ function startFeedbackUI() {
     console.error(`Feedback UI running at http://localhost:${uiPort}`);
   });
 
-  // Auto-open the browser after a short delay to let the server start.
-  // On Linux, skip opening in headless/SSH sessions without a display.
   setTimeout(() => {
     const url = `http://localhost:${uiPort}`;
-    if (process.platform === 'linux') {
+    if (process.platform === "linux") {
       const hasDisplay = process.env.DISPLAY || process.env.WAYLAND_DISPLAY;
       if (!hasDisplay) {
         console.error(`No display detected (SSH/headless). Open manually: ${url}`);
@@ -553,133 +289,168 @@ function startFeedbackUI() {
       }
     }
 
-    if (process.platform === 'darwin') {
-      spawn('open', [url], { stdio: 'ignore' }).on('error', () => {
+    if (process.platform === "darwin") {
+      spawn("open", [url], { stdio: "ignore" }).on("error", () => {
         console.error(`Failed to open browser. Open manually: ${url}`);
       });
       return;
     }
 
-    if (process.platform === 'win32') {
-      spawn('cmd', ['/c', 'start', '', url], { stdio: 'ignore' }).on('error', () => {
+    if (process.platform === "win32") {
+      spawn("cmd", ["/c", "start", "", url], { stdio: "ignore" }).on("error", () => {
         console.error(`Failed to open browser. Open manually: ${url}`);
       });
       return;
     }
 
-    spawn('xdg-open', [url], { stdio: 'ignore' }).on('error', () => {
+    spawn("xdg-open", [url], { stdio: "ignore" }).on("error", () => {
       console.error(`Failed to open browser. Open manually: ${url}`);
     });
   }, 1000);
 }
 
-async function runServer() {
-  if (useSSE) {
-    await runSSEServer();
-  } else {
-    await runStdioServer();
-  }
-}
+async function runStreamableHTTPServer() {
+  const app = express();
 
-async function runStdioServer() {
-  const transport = new StdioServerTransport();
-  await server.connect(transport);
-  console.error("TaskSync MCP Server running on stdio");
-  console.error(`Allowed directories: ${allowedDirectories.join(', ')}`);
-  console.error("Server will initialize components when first tool is called");
+  app.use((req, res, next) => {
+    res.header("Access-Control-Allow-Origin", "*");
+    res.header("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS");
+    res.header("Access-Control-Allow-Headers", "Content-Type, Authorization, mcp-session-id, last-event-id");
+    res.header("Access-Control-Expose-Headers", "mcp-session-id");
+    if (req.method === "OPTIONS") {
+      res.sendStatus(200);
+      return;
+    }
+    next();
+  });
+
+  app.use(express.json());
+
+  const mcpHandler = async (req: express.Request, res: express.Response) => {
+    try {
+      const rawSessionId = req.headers["mcp-session-id"];
+      const sessionId = typeof rawSessionId === "string" ? rawSessionId : undefined;
+      let entry: StreamableSessionEntry | undefined;
+
+      if (sessionId) {
+        entry = streamableSessions.get(sessionId);
+        if (!entry) {
+          res.status(404).json({
+            jsonrpc: "2.0",
+            error: { code: -32000, message: "Bad Request: Invalid session ID" },
+            id: null,
+          });
+          return;
+        }
+        entry.lastActivityAt = new Date().toISOString();
+      } else {
+        if (req.method !== "POST" || !isInitializeRequest(req.body)) {
+          res.status(400).json({
+            jsonrpc: "2.0",
+            error: { code: -32000, message: "Bad Request: No valid session ID provided" },
+            id: null,
+          });
+          return;
+        }
+
+        const sessionServer = createSessionServer();
+        let createdTransport: StreamableHTTPServerTransport;
+        createdTransport = new StreamableHTTPServerTransport({
+          sessionIdGenerator: () => randomUUID(),
+          onsessioninitialized: (initializedSessionId) => {
+            streamableSessions.set(initializedSessionId, {
+              transport: createdTransport,
+              server: sessionServer,
+              createdAt: new Date().toISOString(),
+              lastActivityAt: new Date().toISOString(),
+            });
+          },
+        });
+
+        createdTransport.onclose = () => {
+          const closedSessionId = createdTransport.sessionId;
+          if (!closedSessionId) return;
+          streamableSessions.delete(closedSessionId);
+          feedbackStateBySession.delete(closedSessionId);
+          if (activeUiSessionId === closedSessionId) {
+            activeUiSessionId = DEFAULT_FEEDBACK_SESSION;
+          }
+        };
+
+        await sessionServer.connect(createdTransport);
+        entry = {
+          transport: createdTransport,
+          server: sessionServer,
+          createdAt: new Date().toISOString(),
+          lastActivityAt: new Date().toISOString(),
+        };
+      }
+
+      await entry.transport.handleRequest(req, res, req.body);
+    } catch (error) {
+      console.error("Error handling streamable HTTP MCP request:", error);
+      if (!res.headersSent) {
+        res.status(500).json({
+          jsonrpc: "2.0",
+          error: { code: -32603, message: "Internal server error" },
+          id: null,
+        });
+      }
+    }
+  };
+
+  app.post("/mcp", mcpHandler);
+  app.get("/mcp", mcpHandler);
+  app.delete("/mcp", mcpHandler);
+
+  app.get("/health", (_req, res) => {
+    res.json({
+      status: "ok",
+      server: "tasksync-mcp",
+      version: "1.0.0",
+      transport: "streamable-http",
+      sessions: streamableSessions.size,
+      persistence: "none",
+    });
+  });
+
+  app.listen(mcpPort, () => {
+    console.error(`TaskSync MCP Server running on Streamable HTTP at http://localhost:${mcpPort}`);
+    console.error(`MCP endpoint: http://localhost:${mcpPort}/mcp`);
+    console.error(`Health check: http://localhost:${mcpPort}/health`);
+  });
 
   if (!noUI) {
     startFeedbackUI();
   }
 }
 
-async function runSSEServer() {
-  const app = express();
-
-  // Enable CORS for development
-  app.use((req, res, next) => {
-    res.header('Access-Control-Allow-Origin', '*');
-    res.header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-    res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization');
-    if (req.method === 'OPTIONS') {
-      res.sendStatus(200);
-    } else {
-      next();
-    }
-  });
-
-  app.use(express.json());
-
-  // SSE endpoint
-  app.get("/sse", async (_, res) => {
-    const transport = new SSEServerTransport('/messages', res);
-    connectedTransports.add(transport);
-
-    res.on("close", () => {
-      connectedTransports.delete(transport);
-      console.error(`Client disconnected. Active connections: ${connectedTransports.size}`);
-    });
-
-    console.error(`Client connected via SSE. Active connections: ${connectedTransports.size}`);
-    await server.connect(transport);
-  });
-
-  // Messages endpoint for POST requests
-  app.post("/messages", async (req, res) => {
-    const sessionId = req.query.sessionId as string;
-    const transport = Array.from(connectedTransports).find(t => t.sessionId === sessionId);
-
-    if (transport) {
-      await transport.handlePostMessage(req, res);
-    } else {
-      res.status(400).send("No transport found for sessionId");
-    }
-  });
-
-  // Health check endpoint
-  app.get("/health", (_, res) => {
-    res.json({
-      status: "ok",
-      server: "tasksync-mcp",
-      version: "1.0.0",
-      connections: connectedTransports.size,
-      allowedDirectories: allowedDirectories.length
-    });
-  });
-
-  // Setup file watcher for default review file
-  await setupFileWatcher(path.join(process.cwd(), 'feedback.md'), true);
-
-  app.listen(ssePort, () => {
-    console.error(`TaskSync MCP Server running on SSE at http://localhost:${ssePort}`);
-    console.error(`SSE endpoint: http://localhost:${ssePort}/sse`);
-    console.error(`Health check: http://localhost:${ssePort}/health`);
-    console.error(`Allowed directories: ${allowedDirectories.join(', ')}`);
-    console.error(`File watcher active for: feedback.md`);
-  });
-}
-
-// Cleanup helper — safe to call multiple times
 let cleanedUp = false;
 function cleanup() {
   if (cleanedUp) return;
   cleanedUp = true;
-  console.error('\nShutting down server...');
 
-  for (const [watchedPath, watcher] of fileWatchers.entries()) {
-    try {
-      watcher.close();
-      console.error(`Closed watcher for ${watchedPath}`);
-    } catch { }
+  console.error("\nShutting down server...");
+  for (const [sessionId, session] of streamableSessions.entries()) {
+    session.transport.close().catch(() => {
+      /* best-effort shutdown */
+    });
+    streamableSessions.delete(sessionId);
+    feedbackStateBySession.delete(sessionId);
   }
 }
 
-// Handle all exit scenarios
-process.on('SIGINT', () => { cleanup(); process.exit(0); });
-process.on('SIGTERM', () => { cleanup(); process.exit(0); });
-process.on('exit', cleanup); // Final safety net (sync-only, but kill() is sync)
+process.on("SIGINT", () => {
+  cleanup();
+  process.exit(0);
+});
+process.on("SIGTERM", () => {
+  cleanup();
+  process.exit(0);
+});
+process.on("exit", cleanup);
 
-runServer().catch((error) => {
+runStreamableHTTPServer().catch((error) => {
   console.error("Fatal error running TaskSync server:", error);
   process.exit(1);
 });
