@@ -461,6 +461,12 @@ async function runStreamableHTTPServer() {
       if (sessionId) {
         entry = streamableSessions.get(sessionId);
         if (!entry) {
+          if (req.method === "DELETE") {
+            logEvent("info", "mcp.session.delete.missing", { sessionId });
+            res.status(200).json({ jsonrpc: "2.0", result: {}, id: null });
+            return;
+          }
+
           logEvent("warn", "mcp.session.invalid", { sessionId, method: req.method });
           res.status(404).json({
             jsonrpc: "2.0",
