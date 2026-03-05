@@ -43,6 +43,8 @@ type StreamableSessionEntry = {
 
 const feedbackStateBySession = new Map<string, FeedbackChannelState>();
 const streamableSessions = new Map<string, StreamableSessionEntry>();
+const manualAliasBySession = new Map<string, string>();
+const inferredAliasBySession = new Map<string, string>();
 let activeUiSessionId = DEFAULT_FEEDBACK_SESSION;
 
 type LogLevel = "debug" | "info" | "warn" | "error";
@@ -109,6 +111,28 @@ function formatResponseWithHeadTail(content: string, head?: number, tail?: numbe
   const lines = content.split("\n");
   const selected = tail ? lines.slice(-tail) : head ? lines.slice(0, head) : lines;
   return { content: [{ type: "text", text: selected.join("\n") }] };
+}
+
+function normalizeAlias(raw: unknown): string {
+  if (typeof raw !== "string") return "";
+  return raw.trim().replace(/\s+/g, " ").slice(0, 80);
+}
+
+function getSessionAlias(sessionId: string): string {
+  return manualAliasBySession.get(sessionId) || inferredAliasBySession.get(sessionId) || "";
+}
+
+function inferAliasFromInitializeBody(body: unknown): string {
+  if (!body || typeof body !== "object") return "";
+  const params = (body as { params?: unknown }).params;
+  if (!params || typeof params !== "object") return "";
+  const clientInfo = (params as { clientInfo?: unknown }).clientInfo;
+  if (!clientInfo || typeof clientInfo !== "object") return "";
+
+  const name = normalizeAlias((clientInfo as { name?: unknown }).name);
+  const version = normalizeAlias((clientInfo as { version?: unknown }).version);
+  if (!name) return "";
+  return version ? `${name} ${version}` : name;
 }
 
 function resolvePendingFeedback(content: string, rawSessionId?: string): boolean {
@@ -235,9 +259,11 @@ function startFeedbackUI() {
   feedbackApp.use(express.json());
 
   function renderHtml(): string {
+    const activeAlias = getSessionAlias(activeUiSessionId);
+    const activeLabel = activeAlias ? `${activeAlias} (${activeUiSessionId})` : activeUiSessionId;
     return FEEDBACK_HTML
       .replace("FEEDBACK_PATH", "in-memory feedback queue (non-persistent)")
-      .replace("ACTIVE_SESSION_INFO", `Active session: ${activeUiSessionId} | Known sessions: ${streamableSessions.size}`);
+      .replace("ACTIVE_SESSION_INFO", `Active session: ${activeLabel} | Known sessions: ${streamableSessions.size}`);
   }
 
   feedbackApp.get("/", (_req, res) => {
@@ -259,8 +285,10 @@ function startFeedbackUI() {
   feedbackApp.get("/sessions", (_req, res) => {
     const sessions = Array.from(streamableSessions.entries()).map(([sessionId, entry]) => {
       const state = getFeedbackState(sessionId);
+      const alias = getSessionAlias(sessionId);
       return {
         sessionId,
+        alias,
         sessionUrl: `${uiBaseUrl}/session/${encodeURIComponent(sessionId)}`,
         createdAt: entry.createdAt,
         lastActivityAt: entry.lastActivityAt,
@@ -296,6 +324,26 @@ function startFeedbackUI() {
   feedbackApp.post("/sessions/default", setDefaultSessionHandler);
   feedbackApp.post("/sessions/active", setDefaultSessionHandler);
 
+  feedbackApp.post("/sessions/:sessionId/alias", (req, res) => {
+    const sessionId = req.params.sessionId;
+    if (!sessionId || !streamableSessions.has(sessionId)) {
+      logEvent("warn", "ui.sessions.alias.invalid", { sessionId });
+      res.status(404).json({ error: "Session not found" });
+      return;
+    }
+
+    const alias = normalizeAlias(req.body?.alias);
+    if (alias) {
+      manualAliasBySession.set(sessionId, alias);
+      logEvent("info", "ui.sessions.alias.set", { sessionId, alias });
+    } else {
+      manualAliasBySession.delete(sessionId);
+      logEvent("info", "ui.sessions.alias.cleared", { sessionId });
+    }
+
+    res.json({ ok: true, sessionId, alias: getSessionAlias(sessionId) });
+  });
+
   feedbackApp.delete("/sessions/:sessionId", async (req, res) => {
     const sessionId = req.params.sessionId;
     const session = streamableSessions.get(sessionId);
@@ -309,6 +357,8 @@ function startFeedbackUI() {
       await session.transport.close();
       streamableSessions.delete(sessionId);
       feedbackStateBySession.delete(sessionId);
+      manualAliasBySession.delete(sessionId);
+      inferredAliasBySession.delete(sessionId);
       if (activeUiSessionId === sessionId) {
         activeUiSessionId = DEFAULT_FEEDBACK_SESSION;
       }
@@ -433,10 +483,14 @@ async function runStreamableHTTPServer() {
         }
 
         const sessionServer = createSessionServer();
+        const inferredAlias = inferAliasFromInitializeBody(req.body);
         let createdTransport: StreamableHTTPServerTransport;
         createdTransport = new StreamableHTTPServerTransport({
           sessionIdGenerator: () => randomUUID(),
           onsessioninitialized: (initializedSessionId) => {
+            if (inferredAlias) {
+              inferredAliasBySession.set(initializedSessionId, inferredAlias);
+            }
             streamableSessions.set(initializedSessionId, {
               transport: createdTransport,
               server: sessionServer,
@@ -445,6 +499,7 @@ async function runStreamableHTTPServer() {
             });
             logEvent("info", "mcp.session.created", {
               sessionId: initializedSessionId,
+              inferredAlias: inferredAlias || undefined,
               activeSessions: streamableSessions.size,
             });
           },
@@ -455,6 +510,8 @@ async function runStreamableHTTPServer() {
           if (!closedSessionId) return;
           streamableSessions.delete(closedSessionId);
           feedbackStateBySession.delete(closedSessionId);
+          manualAliasBySession.delete(closedSessionId);
+          inferredAliasBySession.delete(closedSessionId);
           if (activeUiSessionId === closedSessionId) {
             activeUiSessionId = DEFAULT_FEEDBACK_SESSION;
           }

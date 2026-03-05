@@ -6,6 +6,7 @@ This guide explains how to use the TaskSync feedback page when multiple sessions
 
 - `Route Here`: Set the session this browser tab will send feedback to.
 - `Set Default`: Set the server fallback session used when no explicit session is provided.
+- `Rename`: Set a readable alias for a session row (does not change the real MCP session ID).
 - `route-target`: Badge showing the session currently selected by this tab.
 - `waiting`: Session is currently blocked on `get_feedback` and can be unblocked by sending feedback.
 - `queued`: Feedback exists for that session and will be returned on its next `get_feedback` call.
@@ -18,6 +19,8 @@ Each session row shows status chips:
 - `queued` or `no-queue`
 - `route-target` (only on the selected route session)
 - `new wait` badge (if that session recently transitioned into waiting)
+
+If a session has an alias, the alias is shown as the row title and the canonical session ID is shown below it.
 
 ## Notification Modes
 

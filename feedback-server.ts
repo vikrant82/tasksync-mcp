@@ -19,12 +19,13 @@ app.use(express.urlencoded({ extended: true }));
 app.use(express.json());
 
 let currentFeedback = "";
+let standaloneAlias = "";
 
 app.get("/", (_req, res) => {
   res.type("html").send(
     FEEDBACK_HTML
       .replace("FEEDBACK_PATH", "in-memory feedback queue (non-persistent)")
-      .replace("ACTIVE_SESSION_INFO", "Active session: standalone | Known sessions: 1")
+      .replace("ACTIVE_SESSION_INFO", `Active session: ${standaloneAlias || "standalone"} | Known sessions: 1`)
   );
 });
 
@@ -39,6 +40,7 @@ app.get("/sessions", (_req, res) => {
     sessions: [
       {
         sessionId: "standalone",
+        alias: standaloneAlias,
         sessionUrl: `http://localhost:${PORT}/session/standalone`,
         createdAt: new Date().toISOString(),
         lastActivityAt: new Date().toISOString(),
@@ -53,7 +55,7 @@ app.get("/session/:sessionId", (_req, res) => {
   res.type("html").send(
     FEEDBACK_HTML
       .replace("FEEDBACK_PATH", "in-memory feedback queue (non-persistent)")
-      .replace("ACTIVE_SESSION_INFO", "Active session: standalone | Known sessions: 1")
+      .replace("ACTIVE_SESSION_INFO", `Active session: ${standaloneAlias || "standalone"} | Known sessions: 1`)
   );
 });
 
@@ -63,6 +65,16 @@ const setDefaultSessionHandler = (_req: express.Request, res: express.Response) 
 
 app.post("/sessions/default", setDefaultSessionHandler);
 app.post("/sessions/active", setDefaultSessionHandler);
+
+app.post("/sessions/:sessionId/alias", (req, res) => {
+  if (req.params.sessionId !== "standalone") {
+    res.status(404).json({ error: "Session not found" });
+    return;
+  }
+
+  standaloneAlias = typeof req.body?.alias === "string" ? req.body.alias.trim().slice(0, 80) : "";
+  res.json({ ok: true, sessionId: "standalone", alias: standaloneAlias });
+});
 
 app.delete("/sessions/:sessionId", (_req, res) => {
   res.json({ ok: true });

@@ -43,7 +43,13 @@ Session semantics:
 - `GET /sessions`
 - `POST /sessions/default` body: `{ "sessionId": string }`
 - `POST /sessions/active` body: `{ "sessionId": string }` (legacy alias)
+- `POST /sessions/:sessionId/alias` body: `{ "alias": string }` (empty alias clears custom name)
 - `DELETE /sessions/:sessionId`
+
+`GET /sessions` response fields per session include:
+- `sessionId`: canonical MCP session ID
+- `alias`: optional display label (manual alias or inferred initialize metadata)
+- `sessionUrl`, `createdAt`, `lastActivityAt`, `waitingForFeedback`, `hasQueuedFeedback`
 
 ## CLI Flags
 

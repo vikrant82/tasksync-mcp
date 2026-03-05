@@ -32,6 +32,7 @@ export const FEEDBACK_HTML = `<!DOCTYPE html>
   .session-item { border: 1px solid var(--border); border-radius: 6px; padding: 0.5rem; background: rgba(255,255,255,0.02); }
   .session-item.active { border-color: var(--accent); }
   .session-item.alert { border-color: rgba(63,185,80,0.55); box-shadow: 0 0 0 2px rgba(63,185,80,0.08) inset; }
+  .session-name { font-size: 0.82rem; font-weight: 600; color: var(--fg); margin-bottom: 0.15rem; }
   .session-id { font-family: monospace; font-size: 0.8rem; word-break: break-all; }
   .session-flags { font-size: 0.75rem; color: var(--muted); margin: 0.25rem 0; }
   .flag { display: inline-block; margin-right: 0.35rem; margin-bottom: 0.2rem; padding: 0.05rem 0.4rem; border-radius: 999px; border: 1px solid var(--border); font-size: 0.68rem; }
@@ -406,6 +407,8 @@ export const FEEDBACK_HTML = `<!DOCTYPE html>
       sessionListEl.innerHTML = sessions.map((s) => {
         const isActive = s.sessionId === active;
         const isRoute = s.sessionId === selectedSessionId;
+        const alias = (typeof s.alias === 'string') ? s.alias.trim() : '';
+        const displayName = alias || s.sessionId;
         if (isRoute) {
           notifiedSessions.delete(s.sessionId);
         }
@@ -421,10 +424,12 @@ export const FEEDBACK_HTML = `<!DOCTYPE html>
           : '';
         const sessionUrl = s.sessionUrl || ('/session/' + encodeURIComponent(s.sessionId));
         return '<li class="session-item ' + (isActive ? 'active ' : '') + (hasAlert ? 'alert' : '') + '">' 
-          + '<div class="session-id">' + escapeHtml(s.sessionId) + '</div>'
+          + '<div class="session-name">' + escapeHtml(displayName) + '</div>'
+          + (alias ? ('<div class="session-id">' + escapeHtml(s.sessionId) + '</div>') : '')
           + '<div class="session-flags">' + waitingFlag + queueFlag + routeFlag + (hasAlert ? ' <span class="session-alert-badge">new wait</span>' : '') + '</div>'
           + '<a class="session-link" href="' + sessionUrl + '" target="_blank" rel="noopener">Open this session in new window</a>'
           + '<div class="session-buttons">'
+          + '<button type="button" class="btn-secondary btn-small" data-action="rename" data-session-id="' + escapeHtml(s.sessionId) + '" data-session-alias="' + escapeHtml(alias) + '">Rename</button>'
           + '<button type="button" class="btn-secondary btn-small" data-action="route" data-session-id="' + escapeHtml(s.sessionId) + '">Route Here</button>'
           + '<button type="button" class="btn-secondary btn-small" data-action="set-default" data-session-id="' + escapeHtml(s.sessionId) + '">Set Default</button>'
           + '<button type="button" class="btn-danger btn-small" data-action="disconnect" data-session-id="' + escapeHtml(s.sessionId) + '">Disconnect</button>'
@@ -481,6 +486,35 @@ export const FEEDBACK_HTML = `<!DOCTYPE html>
     }
   }
 
+  async function renameSession(sessionId, currentAlias) {
+    const nextAliasRaw = window.prompt('Set session alias (empty clears alias):', currentAlias || '');
+    if (nextAliasRaw === null) return;
+
+    try {
+      const res = await fetch('/sessions/' + encodeURIComponent(sessionId) + '/alias', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ alias: nextAliasRaw })
+      });
+
+      if (!res.ok) {
+        showStatus('Failed to rename session', 'error');
+        return;
+      }
+
+      const payload = await res.json();
+      const alias = (payload && typeof payload.alias === 'string') ? payload.alias : '';
+      if (alias) {
+        showStatus('Session alias updated', 'success');
+      } else {
+        showStatus('Session alias cleared', 'success');
+      }
+      loadSessions();
+    } catch (err) {
+      showStatus('Error: ' + err.message, 'error');
+    }
+  }
+
   function routeToSession(sessionId) {
     selectedSessionId = sessionId;
     activeSessionInputEl.value = sessionId;
@@ -512,6 +546,12 @@ export const FEEDBACK_HTML = `<!DOCTYPE html>
 
     if (action === 'route') {
       routeToSession(sessionId);
+      return;
+    }
+
+    if (action === 'rename') {
+      const currentAlias = button.getAttribute('data-session-alias') || '';
+      renameSession(sessionId, currentAlias);
       return;
     }
 
