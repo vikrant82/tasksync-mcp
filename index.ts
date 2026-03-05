@@ -508,14 +508,9 @@ async function runStreamableHTTPServer() {
         createdTransport.onclose = () => {
           const closedSessionId = createdTransport.sessionId;
           if (!closedSessionId) return;
-          streamableSessions.delete(closedSessionId);
-          feedbackStateBySession.delete(closedSessionId);
-          manualAliasBySession.delete(closedSessionId);
-          inferredAliasBySession.delete(closedSessionId);
-          if (activeUiSessionId === closedSessionId) {
-            activeUiSessionId = DEFAULT_FEEDBACK_SESSION;
-          }
-          logEvent("info", "mcp.session.closed", {
+          // Stream closures can be transient (for example SSE reconnects).
+          // Keep session state unless an explicit DELETE/session disconnect occurs.
+          logEvent("warn", "mcp.session.stream.closed", {
             sessionId: closedSessionId,
             activeSessions: streamableSessions.size,
           });
@@ -531,6 +526,21 @@ async function runStreamableHTTPServer() {
       }
 
       await entry.transport.handleRequest(req, res, req.body);
+
+      if (req.method === "DELETE" && sessionId) {
+        streamableSessions.delete(sessionId);
+        feedbackStateBySession.delete(sessionId);
+        manualAliasBySession.delete(sessionId);
+        inferredAliasBySession.delete(sessionId);
+        if (activeUiSessionId === sessionId) {
+          activeUiSessionId = DEFAULT_FEEDBACK_SESSION;
+        }
+        logEvent("info", "mcp.session.closed", {
+          sessionId,
+          activeSessions: streamableSessions.size,
+          reason: "explicit_delete",
+        });
+      }
     } catch (error) {
       logEvent("error", "mcp.request.error", { error: String(error) });
       console.error("Error handling streamable HTTP MCP request:", error);
