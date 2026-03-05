@@ -24,6 +24,7 @@ const uiPort = parseInt(uiPortArg?.split("=")[1] || process.env.FEEDBACK_PORT ||
 const timeoutArg = args.find((arg) => arg.startsWith("--timeout="));
 const parsedTimeout = timeoutArg ? parseInt(timeoutArg.split("=")[1], 10) : NaN;
 const feedbackTimeout = Number.isNaN(parsedTimeout) ? DEFAULT_TIMEOUT : parsedTimeout;
+const logLevel = (process.env.TASKSYNC_LOG_LEVEL || "info").toLowerCase();
 
 const DEFAULT_FEEDBACK_SESSION = "__default__";
 
@@ -43,6 +44,31 @@ type StreamableSessionEntry = {
 const feedbackStateBySession = new Map<string, FeedbackChannelState>();
 const streamableSessions = new Map<string, StreamableSessionEntry>();
 let activeUiSessionId = DEFAULT_FEEDBACK_SESSION;
+
+type LogLevel = "debug" | "info" | "warn" | "error";
+
+const LOG_PRIORITY: Record<LogLevel, number> = {
+  debug: 10,
+  info: 20,
+  warn: 30,
+  error: 40,
+};
+
+function shouldLog(level: LogLevel): boolean {
+  const configured = (LOG_PRIORITY[logLevel as LogLevel] ?? LOG_PRIORITY.info);
+  return LOG_PRIORITY[level] >= configured;
+}
+
+function logEvent(level: LogLevel, event: string, details: Record<string, unknown> = {}) {
+  if (!shouldLog(level)) return;
+  const payload = {
+    ts: new Date().toISOString(),
+    level,
+    event,
+    ...details,
+  };
+  console.error(`[tasksync] ${JSON.stringify(payload)}`);
+}
 
 const AskReviewArgsSchema = z.object({
   path: z.string().optional().describe("Deprecated. Ignored in in-memory mode."),
@@ -71,6 +97,7 @@ function getFeedbackState(sessionId: string): FeedbackChannelState {
     latestFeedback: "",
   };
   feedbackStateBySession.set(sessionId, created);
+  logEvent("debug", "feedback.state.created", { sessionId });
   return created;
 }
 
@@ -88,15 +115,22 @@ function resolvePendingFeedback(content: string, rawSessionId?: string): boolean
   const sessionId = getSessionId(rawSessionId);
   const state = getFeedbackState(sessionId);
   state.latestFeedback = content;
+  logEvent("debug", "feedback.received", {
+    sessionId,
+    contentLength: content.length,
+    hasPendingWaiter: Boolean(state.pendingFeedbackResolve),
+  });
 
   if (state.pendingFeedbackResolve) {
     const resolve = state.pendingFeedbackResolve;
     state.pendingFeedbackResolve = null;
     resolve(content);
+    logEvent("info", "feedback.delivered.to_waiter", { sessionId, contentLength: content.length });
     return true;
   }
 
   state.queuedFeedback = content;
+  logEvent("info", "feedback.queued", { sessionId, contentLength: content.length });
   return false;
 }
 
@@ -121,6 +155,7 @@ function registerServerHandlers(targetServer: Server) {
       const sessionId = getSessionId(extra?.sessionId);
       activeUiSessionId = sessionId;
       const feedbackState = getFeedbackState(sessionId);
+      logEvent("debug", "mcp.tool.call", { tool: name, sessionId });
 
       switch (name) {
         case "get_feedback": {
@@ -132,11 +167,16 @@ function registerServerHandlers(targetServer: Server) {
           if (feedbackState.queuedFeedback !== null) {
             const content = feedbackState.queuedFeedback;
             feedbackState.queuedFeedback = null;
+            logEvent("info", "feedback.return.queued", { sessionId, contentLength: content.length });
             return formatResponseWithHeadTail(content, parsed.data.head, parsed.data.tail);
           }
 
           const feedbackPromise = new Promise<string>((resolve) => {
             feedbackState.pendingFeedbackResolve = resolve;
+          });
+          logEvent("info", "feedback.waiting", {
+            sessionId,
+            timeoutMs: feedbackTimeout,
           });
 
           let result: string | null;
@@ -151,11 +191,13 @@ function registerServerHandlers(targetServer: Server) {
 
           if (result === null) {
             feedbackState.pendingFeedbackResolve = null;
+            logEvent("info", "feedback.wait.timeout", { sessionId, timeoutMs: feedbackTimeout });
             return {
               content: [{ type: "text", text: "[WAITING] No new feedback yet. Call get_feedback again to continue waiting." }],
             };
           }
 
+          logEvent("info", "feedback.return.live", { sessionId, contentLength: result.length });
           return formatResponseWithHeadTail(result, parsed.data.head, parsed.data.tail);
         }
 
@@ -164,6 +206,7 @@ function registerServerHandlers(targetServer: Server) {
       }
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
+      logEvent("error", "mcp.tool.error", { error: errorMessage });
       return {
         content: [{ type: "text", text: `Error: ${errorMessage}` }],
         isError: true,
@@ -191,21 +234,26 @@ function startFeedbackUI() {
   feedbackApp.use(express.urlencoded({ extended: true }));
   feedbackApp.use(express.json());
 
-  const html = FEEDBACK_HTML.replace("FEEDBACK_PATH", "in-memory feedback queue (non-persistent)");
+  function renderHtml(): string {
+    return FEEDBACK_HTML
+      .replace("FEEDBACK_PATH", "in-memory feedback queue (non-persistent)")
+      .replace("ACTIVE_SESSION_INFO", `Active session: ${activeUiSessionId} | Known sessions: ${streamableSessions.size}`);
+  }
 
   feedbackApp.get("/", (_req, res) => {
-    res.type("html").send(html);
+    res.type("html").send(renderHtml());
   });
 
   feedbackApp.get("/session/:sessionId", (_req, res) => {
-    res.type("html").send(html);
+    res.type("html").send(renderHtml());
   });
 
   feedbackApp.get("/feedback", (req, res) => {
     const querySession = typeof req.query.sessionId === "string" ? req.query.sessionId : "";
     const targetSessionId = querySession.trim() || activeUiSessionId;
-    const state = getFeedbackState(getSessionId(targetSessionId));
-    res.type("text").send(state.latestFeedback || "");
+    const normalizedSessionId = getSessionId(targetSessionId);
+    const state = feedbackStateBySession.get(normalizedSessionId);
+    res.type("text").send(state?.latestFeedback || "");
   });
 
   feedbackApp.get("/sessions", (_req, res) => {
@@ -221,24 +269,38 @@ function startFeedbackUI() {
       };
     });
 
-    res.json({ activeUiSessionId, sessions });
+    res.json({
+      defaultUiSessionId: activeUiSessionId,
+      activeUiSessionId,
+      sessions,
+    });
   });
 
-  feedbackApp.post("/sessions/active", (req, res) => {
+  const setDefaultSessionHandler = (req: express.Request, res: express.Response) => {
     const sessionId = typeof req.body?.sessionId === "string" ? req.body.sessionId.trim() : "";
     if (!sessionId || !streamableSessions.has(sessionId)) {
+      logEvent("warn", "ui.sessions.active.invalid", { sessionId });
       res.status(400).json({ error: "Unknown sessionId" });
       return;
     }
 
     activeUiSessionId = sessionId;
-    res.json({ ok: true, activeUiSessionId });
-  });
+    logEvent("info", "ui.sessions.active.set", { sessionId });
+    res.json({
+      ok: true,
+      defaultUiSessionId: activeUiSessionId,
+      activeUiSessionId,
+    });
+  };
+
+  feedbackApp.post("/sessions/default", setDefaultSessionHandler);
+  feedbackApp.post("/sessions/active", setDefaultSessionHandler);
 
   feedbackApp.delete("/sessions/:sessionId", async (req, res) => {
     const sessionId = req.params.sessionId;
     const session = streamableSessions.get(sessionId);
     if (!session) {
+      logEvent("warn", "ui.sessions.delete.missing", { sessionId });
       res.status(404).json({ error: "Session not found" });
       return;
     }
@@ -250,8 +312,10 @@ function startFeedbackUI() {
       if (activeUiSessionId === sessionId) {
         activeUiSessionId = DEFAULT_FEEDBACK_SESSION;
       }
+      logEvent("info", "ui.sessions.delete.ok", { sessionId });
       res.json({ ok: true });
     } catch (error) {
+      logEvent("error", "ui.sessions.delete.error", { sessionId, error: String(error) });
       res.status(500).json({ error: String(error) });
     }
   });
@@ -265,17 +329,24 @@ function startFeedbackUI() {
 
       const state = getFeedbackState(normalizedSessionId);
       state.latestFeedback = content;
+      logEvent("info", "ui.feedback.post", {
+        requestedSessionId,
+        targetSessionId: normalizedSessionId,
+        contentLength: content.length,
+      });
       if (content.trim().length > 0) {
         resolvePendingFeedback(content, normalizedSessionId);
       }
 
       res.json({ ok: true, sessionId: normalizedSessionId });
     } catch (err) {
+      logEvent("error", "ui.feedback.post.error", { error: String(err) });
       res.status(500).json({ error: String(err) });
     }
   });
 
   feedbackApp.listen(uiPort, () => {
+    logEvent("info", "ui.started", { uiPort });
     console.error(`Feedback UI running at http://localhost:${uiPort}`);
   });
 
@@ -328,6 +399,11 @@ async function runStreamableHTTPServer() {
 
   const mcpHandler = async (req: express.Request, res: express.Response) => {
     try {
+      logEvent("debug", "mcp.request", {
+        method: req.method,
+        path: req.path,
+        hasSessionHeader: typeof req.headers["mcp-session-id"] === "string",
+      });
       const rawSessionId = req.headers["mcp-session-id"];
       const sessionId = typeof rawSessionId === "string" ? rawSessionId : undefined;
       let entry: StreamableSessionEntry | undefined;
@@ -335,6 +411,7 @@ async function runStreamableHTTPServer() {
       if (sessionId) {
         entry = streamableSessions.get(sessionId);
         if (!entry) {
+          logEvent("warn", "mcp.session.invalid", { sessionId, method: req.method });
           res.status(404).json({
             jsonrpc: "2.0",
             error: { code: -32000, message: "Bad Request: Invalid session ID" },
@@ -343,8 +420,10 @@ async function runStreamableHTTPServer() {
           return;
         }
         entry.lastActivityAt = new Date().toISOString();
+        logEvent("debug", "mcp.session.reused", { sessionId, method: req.method });
       } else {
         if (req.method !== "POST" || !isInitializeRequest(req.body)) {
+          logEvent("warn", "mcp.session.missing", { method: req.method });
           res.status(400).json({
             jsonrpc: "2.0",
             error: { code: -32000, message: "Bad Request: No valid session ID provided" },
@@ -364,6 +443,10 @@ async function runStreamableHTTPServer() {
               createdAt: new Date().toISOString(),
               lastActivityAt: new Date().toISOString(),
             });
+            logEvent("info", "mcp.session.created", {
+              sessionId: initializedSessionId,
+              activeSessions: streamableSessions.size,
+            });
           },
         });
 
@@ -375,6 +458,10 @@ async function runStreamableHTTPServer() {
           if (activeUiSessionId === closedSessionId) {
             activeUiSessionId = DEFAULT_FEEDBACK_SESSION;
           }
+          logEvent("info", "mcp.session.closed", {
+            sessionId: closedSessionId,
+            activeSessions: streamableSessions.size,
+          });
         };
 
         await sessionServer.connect(createdTransport);
@@ -388,6 +475,7 @@ async function runStreamableHTTPServer() {
 
       await entry.transport.handleRequest(req, res, req.body);
     } catch (error) {
+      logEvent("error", "mcp.request.error", { error: String(error) });
       console.error("Error handling streamable HTTP MCP request:", error);
       if (!res.headersSent) {
         res.status(500).json({
@@ -415,6 +503,13 @@ async function runStreamableHTTPServer() {
   });
 
   app.listen(mcpPort, () => {
+    logEvent("info", "server.started", {
+      mcpPort,
+      uiEnabled: !noUI,
+      uiPort,
+      timeoutMs: feedbackTimeout,
+      logLevel,
+    });
     console.error(`TaskSync MCP Server running on Streamable HTTP at http://localhost:${mcpPort}`);
     console.error(`MCP endpoint: http://localhost:${mcpPort}/mcp`);
     console.error(`Health check: http://localhost:${mcpPort}/health`);
@@ -430,6 +525,7 @@ function cleanup() {
   if (cleanedUp) return;
   cleanedUp = true;
 
+  logEvent("info", "server.cleanup.start", { activeSessions: streamableSessions.size });
   console.error("\nShutting down server...");
   for (const [sessionId, session] of streamableSessions.entries()) {
     session.transport.close().catch(() => {
@@ -438,6 +534,7 @@ function cleanup() {
     streamableSessions.delete(sessionId);
     feedbackStateBySession.delete(sessionId);
   }
+  logEvent("info", "server.cleanup.done", { activeSessions: streamableSessions.size });
 }
 
 process.on("SIGINT", () => {

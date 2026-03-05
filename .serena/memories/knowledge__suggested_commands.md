@@ -5,9 +5,10 @@
 
 ## Run
 - NPM shortcut: `npm run start`
-- Streamable HTTP MCP: `node dist/index.js . --port=3011`
+- Streamable HTTP MCP: `node dist/index.js --port=3011`
 - Disable UI: add `--no-ui`
 - Set UI port: `--ui-port=3460` or env `FEEDBACK_PORT=3460`
+- Debug logs: `TASKSYNC_LOG_LEVEL=debug node dist/index.js --port=3011 --no-ui`
 
 ## Development
 - Watch compile: `npm run watch`

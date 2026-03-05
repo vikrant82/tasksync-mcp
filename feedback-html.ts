@@ -21,18 +21,40 @@ export const FEEDBACK_HTML = `<!DOCTYPE html>
   .panel { margin-top: 1rem; background: var(--input-bg); border: 1px solid var(--border); border-radius: 6px; padding: 0.75rem; }
   .panel h2 { font-size: 0.95rem; color: var(--muted); margin-bottom: 0.5rem; }
   .session-meta { font-size: 0.8rem; color: var(--muted); margin-bottom: 0.5rem; }
+  .notify-controls { display: flex; gap: 0.75rem; align-items: center; font-size: 0.78rem; color: var(--muted); margin: 0.35rem 0 0.6rem; }
+  .notify-controls label { display: inline-flex; align-items: center; gap: 0.3rem; cursor: pointer; }
+  .help-panel { margin: 0 0 0.65rem; padding: 0.55rem 0.65rem; border: 1px solid var(--border); border-radius: 6px; background: rgba(88,166,255,0.06); }
+  .help-title { font-size: 0.78rem; color: #b9d8ff; margin-bottom: 0.35rem; font-weight: 600; }
+  .help-line { font-size: 0.74rem; color: var(--muted); margin: 0.2rem 0; line-height: 1.4; }
   .session-actions { display: flex; gap: 0.5rem; margin-bottom: 0.5rem; }
   .session-actions input { flex: 1; padding: 0.45rem 0.55rem; background: var(--bg); color: var(--fg); border: 1px solid var(--border); border-radius: 6px; font-family: monospace; font-size: 0.8rem; }
   .session-list { list-style: none; display: flex; flex-direction: column; gap: 0.45rem; max-height: 220px; overflow-y: auto; }
   .session-item { border: 1px solid var(--border); border-radius: 6px; padding: 0.5rem; background: rgba(255,255,255,0.02); }
   .session-item.active { border-color: var(--accent); }
+  .session-item.alert { border-color: rgba(63,185,80,0.55); box-shadow: 0 0 0 2px rgba(63,185,80,0.08) inset; }
   .session-id { font-family: monospace; font-size: 0.8rem; word-break: break-all; }
   .session-flags { font-size: 0.75rem; color: var(--muted); margin: 0.25rem 0; }
+  .flag { display: inline-block; margin-right: 0.35rem; margin-bottom: 0.2rem; padding: 0.05rem 0.4rem; border-radius: 999px; border: 1px solid var(--border); font-size: 0.68rem; }
+  .flag-waiting { color: #b6f0bf; border-color: rgba(63,185,80,0.45); background: rgba(63,185,80,0.14); }
+  .flag-idle { color: #b9d8ff; border-color: rgba(88,166,255,0.35); background: rgba(88,166,255,0.1); }
+  .flag-queue { color: #ffd58a; border-color: rgba(255,196,99,0.45); background: rgba(255,196,99,0.14); }
+  .flag-noqueue { color: #c9d1d9; border-color: rgba(139,148,158,0.45); background: rgba(139,148,158,0.1); }
+  .flag-route { color: #d2b8ff; border-color: rgba(186,140,255,0.45); background: rgba(186,140,255,0.14); }
+  .session-alert-badge { display: inline-block; margin-left: 0.4rem; padding: 0.05rem 0.35rem; border-radius: 999px; font-size: 0.68rem; color: #b6f0bf; border: 1px solid rgba(63,185,80,0.45); background: rgba(63,185,80,0.14); }
   .session-buttons { display: flex; gap: 0.4rem; }
   .btn-danger { background: #f85149; color: #fff; }
   .btn-small { padding: 0.35rem 0.65rem; font-size: 0.8rem; }
   .session-link { color: var(--accent); font-size: 0.75rem; text-decoration: none; }
   .session-link:hover { text-decoration: underline; }
+  .wait-banner { display: none; margin: 0.75rem 0 1rem; padding: 0.6rem 0.75rem; border-radius: 8px; border: 1px solid var(--border); font-size: 0.85rem; }
+  .wait-banner.waiting { display: block; border-color: rgba(63,185,80,0.45); background: rgba(63,185,80,0.12); color: #b6f0bf; animation: pulse 1.8s ease-in-out infinite; }
+  .wait-banner.idle { display: block; border-color: rgba(88,166,255,0.35); background: rgba(88,166,255,0.1); color: #b9d8ff; }
+  .feedback-box.waiting { border-color: rgba(63,185,80,0.45); box-shadow: 0 0 0 3px rgba(63,185,80,0.08); }
+  @keyframes pulse {
+    0% { box-shadow: 0 0 0 0 rgba(63,185,80,0.24); }
+    70% { box-shadow: 0 0 0 8px rgba(63,185,80,0); }
+    100% { box-shadow: 0 0 0 0 rgba(63,185,80,0); }
+  }
   textarea { width: 100%; min-height: 200px; padding: 0.75rem; background: var(--input-bg); color: var(--fg); border: 1px solid var(--border); border-radius: 6px; font-family: 'SF Mono', Monaco, 'Cascadia Code', monospace; font-size: 0.9rem; resize: vertical; outline: none; transition: border-color 0.2s; }
   textarea:focus { border-color: var(--accent); }
   .actions { display: flex; gap: 0.5rem; margin-top: 0.75rem; }
@@ -55,8 +77,10 @@ export const FEEDBACK_HTML = `<!DOCTYPE html>
   <h1>TaskSync Feedback</h1>
   <div class="subtitle">Type your feedback below. Press <kbd>Cmd+Enter</kbd> to submit.</div>
   <div class="filepath">Feedback transport: FEEDBACK_PATH</div>
+  <div class="filepath">ACTIVE_SESSION_INFO</div>
+  <div id="wait-banner" class="wait-banner idle">Checking agent wait state...</div>
   <form id="form">
-    <textarea id="feedback" placeholder="Type your feedback here..." autofocus></textarea>
+    <textarea id="feedback" class="feedback-box" placeholder="Type your feedback here..." autofocus></textarea>
     <div class="actions">
       <button type="submit" class="btn-primary">Send Feedback</button>
       <button type="button" class="btn-secondary" onclick="clearFeedback()">Clear Draft</button>
@@ -66,9 +90,26 @@ export const FEEDBACK_HTML = `<!DOCTYPE html>
   <div class="panel">
     <h2>Sessions</h2>
     <div id="session-meta" class="session-meta">Loading sessions...</div>
+    <div class="notify-controls">
+      <label><input id="notify-sound" type="checkbox" checked /> Sound alert</label>
+      <label><input id="notify-desktop" type="checkbox" /> Desktop alert</label>
+      <label>Mode:
+        <select id="notify-mode">
+          <option value="focused">Focused session</option>
+          <option value="all">All sessions</option>
+        </select>
+      </label>
+    </div>
+    <div class="help-panel">
+      <div class="help-title">Session + Notification Help</div>
+      <div class="help-line"><strong>waiting</strong>: session is blocked on <code>get_feedback</code> now.</div>
+      <div class="help-line"><strong>route-target</strong>: this tab will send feedback to this session.</div>
+      <div class="help-line">If sound does not play, click anywhere once to unlock browser audio.</div>
+      <div class="help-line">If desktop alerts do not appear, enable permission in browser site settings.</div>
+    </div>
     <div class="session-actions">
-      <input id="active-session-input" placeholder="Session ID to activate" />
-      <button type="button" class="btn-secondary btn-small" onclick="setActiveFromInput()">Set Active</button>
+      <input id="active-session-input" placeholder="Session ID to set as default" />
+      <button type="button" class="btn-secondary btn-small" onclick="setActiveFromInput()">Set Default</button>
       <button type="button" class="btn-secondary btn-small" onclick="loadSessions()">Refresh</button>
     </div>
     <ul id="session-list" class="session-list"></ul>
@@ -83,12 +124,142 @@ export const FEEDBACK_HTML = `<!DOCTYPE html>
   const textbox = document.getElementById('feedback');
   const statusEl = document.getElementById('status');
   const currentEl = document.getElementById('current-content');
+  const waitBannerEl = document.getElementById('wait-banner');
   const sessionMetaEl = document.getElementById('session-meta');
   const sessionListEl = document.getElementById('session-list');
   const activeSessionInputEl = document.getElementById('active-session-input');
-  const pathSessionMatch = window.location.pathname.match(/^\/session\/([^/]+)$/);
+  const pathSessionMatch = window.location.pathname.match(/^\\/session\\/([^/]+)$/);
   const pathSessionParam = pathSessionMatch ? decodeURIComponent(pathSessionMatch[1]) : '';
   let selectedSessionId = String(pathSessionParam || '').trim();
+  const notifySoundEl = document.getElementById('notify-sound');
+  const notifyDesktopEl = document.getElementById('notify-desktop');
+  const notifyModeEl = document.getElementById('notify-mode');
+  const STORAGE_NOTIFY_SOUND = 'tasksync.notify.sound';
+  const STORAGE_NOTIFY_DESKTOP = 'tasksync.notify.desktop';
+  const STORAGE_NOTIFY_MODE = 'tasksync.notify.mode';
+  let lastWaitSignature = '';
+  const notifiedSessions = new Set();
+  const previousWaitBySession = new Map();
+  let audioContext = null;
+  let audioUnlocked = false;
+
+  notifySoundEl.checked = localStorage.getItem(STORAGE_NOTIFY_SOUND) !== '0';
+  notifyDesktopEl.checked = localStorage.getItem(STORAGE_NOTIFY_DESKTOP) === '1';
+  notifyModeEl.value = localStorage.getItem(STORAGE_NOTIFY_MODE) || 'focused';
+
+  notifySoundEl.addEventListener('change', () => {
+    localStorage.setItem(STORAGE_NOTIFY_SOUND, notifySoundEl.checked ? '1' : '0');
+    if (notifySoundEl.checked) {
+      unlockAudioContext();
+    }
+  });
+
+  notifyDesktopEl.addEventListener('change', async () => {
+    if (notifyDesktopEl.checked) {
+      const granted = await ensureDesktopPermission();
+      if (!granted) {
+        notifyDesktopEl.checked = false;
+      }
+    }
+    localStorage.setItem(STORAGE_NOTIFY_DESKTOP, notifyDesktopEl.checked ? '1' : '0');
+  });
+
+  notifyModeEl.addEventListener('change', () => {
+    localStorage.setItem(STORAGE_NOTIFY_MODE, notifyModeEl.value || 'focused');
+  });
+
+  function getAudioContext() {
+    if (audioContext) return audioContext;
+    const AudioContextCtor = window.AudioContext || window.webkitAudioContext;
+    if (!AudioContextCtor) return null;
+    try {
+      audioContext = new AudioContextCtor();
+      audioUnlocked = audioContext.state === 'running';
+      return audioContext;
+    } catch {
+      return null;
+    }
+  }
+
+  async function unlockAudioContext() {
+    const ctx = getAudioContext();
+    if (!ctx) return false;
+    if (ctx.state === 'suspended') {
+      try {
+        await ctx.resume();
+      } catch {
+        return false;
+      }
+    }
+    audioUnlocked = ctx.state === 'running';
+    return audioUnlocked;
+  }
+
+  async function ensureDesktopPermission() {
+    if (!('Notification' in window)) return false;
+    if (Notification.permission === 'granted') return true;
+    if (Notification.permission === 'denied') return false;
+    try {
+      const permission = await Notification.requestPermission();
+      return permission === 'granted';
+    } catch {
+      return false;
+    }
+  }
+
+  // Browser autoplay policies require a user gesture before WebAudio can play.
+  async function primeAlertsFromGesture() {
+    if (notifySoundEl.checked && !audioUnlocked) {
+      await unlockAudioContext();
+    }
+    if (notifyDesktopEl.checked && 'Notification' in window && Notification.permission === 'default') {
+      const granted = await ensureDesktopPermission();
+      if (!granted) {
+        notifyDesktopEl.checked = false;
+        localStorage.setItem(STORAGE_NOTIFY_DESKTOP, '0');
+      }
+    }
+  }
+
+  ['pointerdown', 'keydown', 'touchstart'].forEach((eventName) => {
+    window.addEventListener(eventName, primeAlertsFromGesture, { passive: true });
+  });
+
+  function playSoundAlert() {
+    if (!notifySoundEl.checked) return;
+    const ctx = getAudioContext();
+    if (!ctx || ctx.state !== 'running') return;
+    try {
+      const oscillator = ctx.createOscillator();
+      const gain = ctx.createGain();
+      oscillator.type = 'sine';
+      oscillator.frequency.value = 880;
+      gain.gain.value = 0.04;
+      oscillator.connect(gain);
+      gain.connect(ctx.destination);
+      oscillator.start();
+      oscillator.stop(ctx.currentTime + 0.14);
+    } catch {
+      // Ignore browser audio API failures.
+    }
+  }
+
+  function showDesktopAlert(sessionId) {
+    if (!notifyDesktopEl.checked) return;
+    if (!('Notification' in window) || Notification.permission !== 'granted') return;
+    try {
+      new Notification('TaskSync: Agent waiting', {
+        body: 'Session ' + sessionId + ' is waiting for feedback.',
+      });
+    } catch {
+      // Ignore notification failures.
+    }
+  }
+
+  function notifyWaitingTransition(sessionId) {
+    playSoundAlert();
+    showDesktopAlert(sessionId);
+  }
 
   function updateUrlSession(sessionId) {
     const url = new URL(window.location.href);
@@ -161,13 +332,71 @@ export const FEEDBACK_HTML = `<!DOCTYPE html>
 
       const payload = await res.json();
       const sessions = Array.isArray(payload.sessions) ? payload.sessions : [];
-      const active = payload.activeUiSessionId || '(none)';
+      const active = payload.defaultUiSessionId || payload.activeUiSessionId || '(none)';
+
+      if (selectedSessionId && !sessions.some((s) => s.sessionId === selectedSessionId)) {
+        selectedSessionId = (active && active !== '(none)') ? active : '';
+      }
+
       if (!selectedSessionId) {
-        selectedSessionId = payload.activeUiSessionId || '';
+        selectedSessionId = payload.defaultUiSessionId || payload.activeUiSessionId || '';
       }
       activeSessionInputEl.value = selectedSessionId;
       const routeHint = selectedSessionId ? (' | Route: ' + selectedSessionId) : '';
-      sessionMetaEl.textContent = 'Active: ' + active + routeHint + ' | Total sessions: ' + sessions.length;
+      sessionMetaEl.textContent = 'Default (fallback): ' + active + routeHint + ' | Total sessions: ' + sessions.length;
+
+      const targetSessionId = selectedSessionId || active;
+      const waitingSessions = sessions.filter((s) => Boolean(s.waitingForFeedback));
+
+      for (const s of sessions) {
+        const wasWaiting = Boolean(previousWaitBySession.get(s.sessionId));
+        const isWaitingNow = Boolean(s.waitingForFeedback);
+        if (!wasWaiting && isWaitingNow) {
+          const mode = notifyModeEl.value || 'focused';
+          const shouldNotify = mode === 'all' || s.sessionId === targetSessionId;
+          if (shouldNotify) {
+            notifyWaitingTransition(s.sessionId);
+            notifiedSessions.add(s.sessionId);
+          }
+        }
+        previousWaitBySession.set(s.sessionId, isWaitingNow);
+      }
+
+      for (const prevId of Array.from(previousWaitBySession.keys())) {
+        if (!sessions.some((s) => s.sessionId === prevId)) {
+          previousWaitBySession.delete(prevId);
+          notifiedSessions.delete(prevId);
+        }
+      }
+
+      const targetSession = sessions.find((s) => s.sessionId === targetSessionId);
+      const targetWaiting = Boolean(targetSession && targetSession.waitingForFeedback);
+      const anyWaiting = waitingSessions.length > 0;
+      const firstWaitingSessionId = waitingSessions[0]?.sessionId || '(none)';
+
+      if (targetWaiting) {
+        waitBannerEl.className = 'wait-banner waiting';
+        waitBannerEl.textContent = 'Agent is waiting for feedback on session: ' + targetSessionId;
+        textbox.classList.add('waiting');
+        document.title = 'TaskSync - Agent Waiting';
+
+        const signature = targetSessionId + ':waiting';
+        if (lastWaitSignature !== signature) {
+          notifyWaitingTransition(targetSessionId);
+          lastWaitSignature = signature;
+        }
+      } else if (anyWaiting) {
+        waitBannerEl.className = 'wait-banner waiting';
+        waitBannerEl.textContent = 'A different session is waiting for feedback: ' + firstWaitingSessionId + '. Use Route Here to focus it.';
+        textbox.classList.remove('waiting');
+        document.title = 'TaskSync - Session Waiting';
+      } else {
+        waitBannerEl.className = 'wait-banner idle';
+        waitBannerEl.textContent = 'No session is currently blocked on get_feedback.';
+        textbox.classList.remove('waiting');
+        document.title = 'TaskSync Feedback';
+        lastWaitSignature = 'idle';
+      }
 
       if (sessions.length === 0) {
         sessionListEl.innerHTML = '<li class="session-item">No active streamable sessions</li>';
@@ -177,19 +406,28 @@ export const FEEDBACK_HTML = `<!DOCTYPE html>
       sessionListEl.innerHTML = sessions.map((s) => {
         const isActive = s.sessionId === active;
         const isRoute = s.sessionId === selectedSessionId;
-        const flags = [
-          s.waitingForFeedback ? 'waiting' : 'idle',
-          s.hasQueuedFeedback ? 'queued' : 'no-queue'
-        ].join(' | ');
+        if (isRoute) {
+          notifiedSessions.delete(s.sessionId);
+        }
+        const hasAlert = notifiedSessions.has(s.sessionId);
+        const waitingFlag = s.waitingForFeedback
+          ? '<span class="flag flag-waiting">waiting</span>'
+          : '<span class="flag flag-idle">idle</span>';
+        const queueFlag = s.hasQueuedFeedback
+          ? '<span class="flag flag-queue">queued</span>'
+          : '<span class="flag flag-noqueue">no-queue</span>';
+        const routeFlag = isRoute
+          ? '<span class="flag flag-route">route-target</span>'
+          : '';
         const sessionUrl = s.sessionUrl || ('/session/' + encodeURIComponent(s.sessionId));
-        return '<li class="session-item ' + (isActive ? 'active' : '') + '">'
+        return '<li class="session-item ' + (isActive ? 'active ' : '') + (hasAlert ? 'alert' : '') + '">' 
           + '<div class="session-id">' + escapeHtml(s.sessionId) + '</div>'
-          + '<div class="session-flags">' + flags + (isRoute ? ' | route-target' : '') + '</div>'
+          + '<div class="session-flags">' + waitingFlag + queueFlag + routeFlag + (hasAlert ? ' <span class="session-alert-badge">new wait</span>' : '') + '</div>'
           + '<a class="session-link" href="' + sessionUrl + '" target="_blank" rel="noopener">Open this session in new window</a>'
           + '<div class="session-buttons">'
-          + '<button type="button" class="btn-secondary btn-small" onclick="routeToSession(\'' + escapeJs(s.sessionId) + '\')">Route Here</button>'
-          + '<button type="button" class="btn-secondary btn-small" onclick="setActiveSession(\'' + escapeJs(s.sessionId) + '\')">Set Active</button>'
-          + '<button type="button" class="btn-danger btn-small" onclick="disconnectSession(\'' + escapeJs(s.sessionId) + '\')">Disconnect</button>'
+          + '<button type="button" class="btn-secondary btn-small" data-action="route" data-session-id="' + escapeHtml(s.sessionId) + '">Route Here</button>'
+          + '<button type="button" class="btn-secondary btn-small" data-action="set-default" data-session-id="' + escapeHtml(s.sessionId) + '">Set Default</button>'
+          + '<button type="button" class="btn-danger btn-small" data-action="disconnect" data-session-id="' + escapeHtml(s.sessionId) + '">Disconnect</button>'
           + '</div>'
           + '</li>';
       }).join('');
@@ -201,7 +439,7 @@ export const FEEDBACK_HTML = `<!DOCTYPE html>
 
   async function setActiveSession(sessionId) {
     try {
-      const res = await fetch('/sessions/active', {
+      const res = await fetch('/sessions/default', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ sessionId })
@@ -214,8 +452,9 @@ export const FEEDBACK_HTML = `<!DOCTYPE html>
 
       activeSessionInputEl.value = sessionId;
       selectedSessionId = sessionId;
+      notifiedSessions.delete(sessionId);
       updateUrlSession(sessionId);
-      showStatus('Active session updated', 'success');
+      showStatus('Default session updated', 'success');
       loadSessions();
     } catch (err) {
       showStatus('Error: ' + err.message, 'error');
@@ -245,6 +484,7 @@ export const FEEDBACK_HTML = `<!DOCTYPE html>
   function routeToSession(sessionId) {
     selectedSessionId = sessionId;
     activeSessionInputEl.value = sessionId;
+    notifiedSessions.delete(sessionId);
     updateUrlSession(sessionId);
     showStatus('Routing feedback to selected session', 'success');
     loadSessions();
@@ -260,6 +500,31 @@ export const FEEDBACK_HTML = `<!DOCTYPE html>
     setActiveSession(sessionId);
   }
 
+  sessionListEl.addEventListener('click', (event) => {
+    const rawTarget = event.target;
+    if (!(rawTarget instanceof HTMLElement)) return;
+    const button = rawTarget.closest('button[data-action]');
+    if (!button) return;
+
+    const action = button.getAttribute('data-action');
+    const sessionId = button.getAttribute('data-session-id') || '';
+    if (!sessionId) return;
+
+    if (action === 'route') {
+      routeToSession(sessionId);
+      return;
+    }
+
+    if (action === 'set-default') {
+      setActiveSession(sessionId);
+      return;
+    }
+
+    if (action === 'disconnect') {
+      disconnectSession(sessionId);
+    }
+  });
+
   function escapeHtml(value) {
     return String(value)
       .replace(/&/g, '&amp;')
@@ -267,15 +532,6 @@ export const FEEDBACK_HTML = `<!DOCTYPE html>
       .replace(/>/g, '&gt;')
       .replace(/\"/g, '&quot;')
       .replace(/'/g, '&#39;');
-  }
-
-  function escapeJs(value) {
-    return String(value)
-      .replace(/\\/g, '\\\\')
-      .replace(/'/g, "\\'")
-      .replace(/\"/g, '\\"')
-      .replace(/\n/g, '\\n')
-      .replace(/\r/g, '\\r');
   }
 
   function showStatus(msg, type) {

@@ -41,7 +41,8 @@ Session semantics:
 - `GET /feedback?sessionId=<id>`
 - `POST /feedback` body: `{ "content": string, "sessionId"?: string }`
 - `GET /sessions`
-- `POST /sessions/active` body: `{ "sessionId": string }`
+- `POST /sessions/default` body: `{ "sessionId": string }`
+- `POST /sessions/active` body: `{ "sessionId": string }` (legacy alias)
 - `DELETE /sessions/:sessionId`
 
 ## CLI Flags

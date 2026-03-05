@@ -21,7 +21,11 @@ app.use(express.json());
 let currentFeedback = "";
 
 app.get("/", (_req, res) => {
-  res.type("html").send(FEEDBACK_HTML.replace("FEEDBACK_PATH", "in-memory feedback queue (non-persistent)"));
+  res.type("html").send(
+    FEEDBACK_HTML
+      .replace("FEEDBACK_PATH", "in-memory feedback queue (non-persistent)")
+      .replace("ACTIVE_SESSION_INFO", "Active session: standalone | Known sessions: 1")
+  );
 });
 
 app.get("/feedback", (_req, res) => {
@@ -30,6 +34,7 @@ app.get("/feedback", (_req, res) => {
 
 app.get("/sessions", (_req, res) => {
   res.json({
+    defaultUiSessionId: "standalone",
     activeUiSessionId: "standalone",
     sessions: [
       {
@@ -45,12 +50,19 @@ app.get("/sessions", (_req, res) => {
 });
 
 app.get("/session/:sessionId", (_req, res) => {
-  res.type("html").send(FEEDBACK_HTML.replace("FEEDBACK_PATH", "in-memory feedback queue (non-persistent)"));
+  res.type("html").send(
+    FEEDBACK_HTML
+      .replace("FEEDBACK_PATH", "in-memory feedback queue (non-persistent)")
+      .replace("ACTIVE_SESSION_INFO", "Active session: standalone | Known sessions: 1")
+  );
 });
 
-app.post("/sessions/active", (_req, res) => {
-  res.json({ ok: true, activeUiSessionId: "standalone" });
-});
+const setDefaultSessionHandler = (_req: express.Request, res: express.Response) => {
+  res.json({ ok: true, defaultUiSessionId: "standalone", activeUiSessionId: "standalone" });
+};
+
+app.post("/sessions/default", setDefaultSessionHandler);
+app.post("/sessions/active", setDefaultSessionHandler);
 
 app.delete("/sessions/:sessionId", (_req, res) => {
   res.json({ ok: true });

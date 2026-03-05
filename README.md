@@ -69,10 +69,18 @@ Optional auth headers:
 - `--timeout=<ms>`: `get_feedback` wait timeout (`0` means block indefinitely)
 - `--no-ui`: disable embedded feedback UI
 
+## Logging
+
+- `TASKSYNC_LOG_LEVEL=debug|info|warn|error` (default: `info`)
+- Example: `TASKSYNC_LOG_LEVEL=debug node dist/index.js --port=3011 --ui-port=3457`
+
+Session routing note: UI "default session" is the fallback target used only when `POST /feedback` omits `sessionId`.
+
 ## Documentation
 
 - `docs/API_SPEC.md`
 - `docs/SESSION_WORKFLOW.md`
+- `docs/FEEDBACK_UI_GUIDE.md`
 - `docs/http-api.openapi.yaml`
 - `docs/examples/client-configs.md`
 - `docs/examples/http-endpoints.curl.md`

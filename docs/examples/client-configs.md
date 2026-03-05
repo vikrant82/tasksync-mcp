@@ -72,6 +72,43 @@ If you still want OpenCode to launch the process itself:
 }
 ```
 
+## VS Code Copilot MCP (`.vscode/mcp.json`)
+
+TaskSync is remote MCP-first in this repo, so configure it with `url`.
+Serena can remain local `stdio`.
+
+```json
+{
+  "servers": {
+    "tasksync-serena": {
+      "type": "stdio",
+      "command": "uvx",
+      "args": [
+        "--from",
+        "git+https://github.com/oraios/serena",
+        "serena",
+        "start-mcp-server",
+        "--context",
+        "ide-assistant",
+        "--project",
+        "tasksync-mcp",
+        "/home/chauv/.config/opencode/tasksync-mcp"
+      ]
+    },
+    "tasksync": {
+      "url": "http://localhost:3011/mcp"
+    }
+  },
+  "inputs": []
+}
+```
+
+After saving `mcp.json`, start servers from the file CodeLens and verify in command palette:
+
+- `MCP: List Servers`
+
+You should see both `tasksync-serena` and `tasksync` available.
+
 ## Notes
 
 - MCP endpoint: `http://localhost:3011/mcp`

@@ -58,7 +58,7 @@ while true:
 
 ## 2) Calling get_feedback
 
-Call `mcp_tasksync_get_feedback` with no arguments. The server manages the in-memory feedback queue automatically. Feedback can be provided via the embedded web UI (when enabled) or via the feedback HTTP endpoints.
+Call `mcp_tasksync_get_feedback` with no arguments. The server manages the feedback file and web UI automatically. Do not pass a path unless explicitly told to use a custom feedback file.
 
 ---
 

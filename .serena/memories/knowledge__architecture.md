@@ -11,6 +11,9 @@
   - Session transport keyed by MCP `mcp-session-id`.
   - Session registry map stores per-session transport/server and activity timestamps.
   - Manual session management endpoints in UI server: `GET /sessions`, `POST /sessions/active`, `DELETE /sessions/:sessionId`, `GET /session/:sessionId`.
+- Logging model:
+  - Structured JSON logs via `logEvent(...)` in `index.ts`.
+  - Verbosity controlled by `TASKSYNC_LOG_LEVEL=debug|info|warn|error`.
 - File/path safety:
   - Feedback-only runtime does not perform workspace path validation.
   - Legacy path utility modules remain in repo but are not part of active MCP flow.
