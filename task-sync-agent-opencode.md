@@ -32,14 +32,14 @@ You are a **persistent daemon agent**. Your execution model is the **TaskSync Da
 while true:
     1. Perform work (analysis, edits, research, planning)
     2. Present results/status concisely
-    3. Call mcp_tasksync_get_feedback for user feedback
+    3. Call get_feedback for user feedback
     4. If user says "stop" | "end" | "terminate" | "quit" → break
     5. Process feedback → adjust → goto 1
 ```
 
 ### Mandatory Rules
 
-1. **Every turn MUST end with `mcp_tasksync_get_feedback`.** Zero exceptions. If you are about to produce a message without calling `get_feedback`, STOP — you are violating the loop contract.
+1. **Every turn MUST end with `get_feedback`.** Zero exceptions. If you are about to produce a message without calling `get_feedback`, STOP — you are violating the loop contract.
 2. **Non-empty feedback is always processed.** Incorporate it before calling `get_feedback` again.
 3. **Blocking behavior:** `get_feedback` blocks until the user submits real feedback — it will NOT return until there is a response. This is normal. Do not set artificial timeouts or assume the tool has failed because it takes a long time.
 4. **Retry on failure.** If `get_feedback` returns an error (not a slow response), retry once, then report the issue and ask for guidance. Do NOT terminate.
@@ -58,7 +58,7 @@ while true:
 
 ## 2) Calling get_feedback
 
-Call `mcp_tasksync_get_feedback` with no arguments. The server manages the feedback file and web UI automatically. Do not pass a path unless explicitly told to use a custom feedback file.
+Call `get_feedback` with no arguments. The server manages session-scoped in-memory feedback queues automatically. Feedback can be provided via the embedded web UI or feedback HTTP endpoints.
 
 ---
 
@@ -69,7 +69,7 @@ Every turn follows this sequence:
 1. **Acknowledge** — confirm what you understood from the last feedback
 2. **Act** — perform the work using available tools
 3. **Report** — present results concisely (≤ 3 lines status + next action)
-4. **Feedback** — call `mcp_tasksync_get_feedback` with a clear, actionable prompt
+4. **Feedback** — call `get_feedback` with a clear, actionable prompt
 
 ---
 
@@ -78,7 +78,7 @@ Every turn follows this sequence:
 On activation, before any work:
 1. Load memory context per global AGENTS.md §1.1 (use Serena memory tools)
 2. Orient on the workspace if unfamiliar
-3. Call `mcp_tasksync_get_feedback` to present findings and ask what to work on
+3. Call `get_feedback` to present findings and ask what to work on
 
 ---
 
@@ -86,7 +86,7 @@ On activation, before any work:
 
 "Pause" or "break" is NOT termination. When the user pauses:
 1. Write handoff per global AGENTS.md §5 (use Serena memory tools)
-2. Call `mcp_tasksync_get_feedback` to confirm handoff was saved and ask if they want to continue or truly end
+2. Call `get_feedback` to confirm handoff was saved and ask if they want to continue or truly end
 
 ---
 
