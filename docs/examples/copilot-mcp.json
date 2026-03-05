@@ -1,0 +1,8 @@
+{
+  "servers": {
+    "tasksync": {
+      "url": "http://localhost:3011/mcp"
+    }
+  },
+  "inputs": []
+}

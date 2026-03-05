@@ -83,6 +83,7 @@ Session routing note: UI "default session" is the fallback target used only when
 - `docs/FEEDBACK_UI_GUIDE.md`
 - `docs/http-api.openapi.yaml`
 - `docs/examples/client-configs.md`
+- `docs/examples/copilot-mcp.json`
 - `docs/examples/http-endpoints.curl.md`
 - `docs/examples/multi-session-flow.curl.md`
 
