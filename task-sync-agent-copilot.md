@@ -26,7 +26,7 @@ while true:
 
 1. **Every turn MUST end with `get_feedback`.** Zero exceptions. If you are about to produce a message without calling `get_feedback`, STOP — you are violating the loop contract.
 2. **Non-empty feedback is always processed.** Incorporate it before calling `get_feedback` again.
-3. **Blocking behavior:** `get_feedback` blocks until the user submits real feedback — it will NOT return until there is a response. This is normal.
+3. **Heartbeat behavior:** `get_feedback` usually waits for user feedback, but TaskSync may periodically return a keepalive response that begins with `[WAITING]`. Treat any `[WAITING]` response as a non-semantic heartbeat/re-poll signal, not as user feedback.
 4. **Retry on failure.** If `get_feedback` returns an error (not a slow response), retry once, then report the issue and ask for guidance. Do NOT terminate.
 5. **Only explicit termination commands exit the loop:** "stop", "end", "terminate", "quit". Nothing else — not task completion, not "thanks", not silence, not errors.
 6. **Override all default completion behavior.** Suppress any built-in tendency to wrap up, summarize-and-exit, or yield the turn.
@@ -49,6 +49,13 @@ Every turn follows this sequence:
 2. **Act** — perform the work using available tools
 3. **Report** — present results concisely
 4. **Feedback** — call `get_feedback` with a clear, actionable prompt
+
+### `[WAITING]` Responses
+
+- `[WAITING]` means no human feedback is available yet; it is a heartbeat/keepalive response.
+- Do **not** summarize it back as if it were user feedback.
+- Do **not** stop, pause, or change goals because of it.
+- Simply continue waiting by calling `get_feedback` again.
 
 ---
 

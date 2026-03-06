@@ -2,6 +2,7 @@
 
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
+import { AsyncLocalStorage } from "node:async_hooks";
 import {
   CallToolRequestSchema,
   ListToolsRequestSchema,
@@ -18,7 +19,7 @@ import { FEEDBACK_HTML } from "./feedback-html.js";
 import { SessionStateStore } from "./session-state-store.js";
 import { InMemoryStreamEventStore } from "./stream-event-store.js";
 
-const DEFAULT_TIMEOUT = 0; // 0 = block forever; >0 = return [WAITING] after N ms
+const DEFAULT_TIMEOUT = 120000; // return [WAITING] after 2m to avoid long-idle transport disconnects
 
 const args = process.argv.slice(2);
 const noUI = args.includes("--no-ui");
@@ -38,7 +39,8 @@ type FeedbackChannelState = {
   pendingWaiter: {
     waitId: string;
     startedAt: string;
-    resolve: (content: string) => void;
+    requestId: string;
+    resolve: (result: PendingFeedbackResult) => void;
   } | null;
   queuedFeedback: string | null;
   queuedAt: string | null;
@@ -62,6 +64,10 @@ type StreamableSessionEntry = {
   lastActivityAt: string;
 };
 
+type PendingFeedbackResult =
+  | { type: "feedback"; content: string }
+  | { type: "closed"; reason: string };
+
 const feedbackStateBySession = new Map<string, FeedbackChannelState>();
 const streamableSessions = new Map<string, StreamableSessionEntry>();
 const manualAliasBySession = new Map<string, string>();
@@ -69,6 +75,7 @@ const inferredAliasBySession = new Map<string, string>();
 const clientGenerationByAlias = new Map<string, number>();
 const sessionStateStore = new SessionStateStore();
 const streamEventStore = new InMemoryStreamEventStore();
+const requestContext = new AsyncLocalStorage<{ requestId: string }>();
 let activeUiSessionId = DEFAULT_FEEDBACK_SESSION;
 type UiEventClient = { res: express.Response; targetSessionId: string };
 const uiEventClients = new Set<UiEventClient>();
@@ -553,9 +560,10 @@ async function resolvePendingFeedback(content: string, rawSessionId?: string): P
     state.queuedAt = null;
     await persistFeedbackState(sessionId);
     broadcastUiState(sessionId);
-    waiter.resolve(content);
+    waiter.resolve({ type: "feedback", content });
     logEvent("info", "feedback.delivered.to_waiter", {
       sessionId,
+      requestId: waiter.requestId,
       waitId: waiter.waitId,
       waitStartedAt: waiter.startedAt,
       waitDurationMs: Date.now() - Date.parse(waiter.startedAt),
@@ -576,19 +584,55 @@ async function resolvePendingFeedback(content: string, rawSessionId?: string): P
   return false;
 }
 
-async function clearPendingWaiter(sessionId: string, reason: string) {
+async function clearPendingWaiter(sessionId: string, reason: string, expectedRequestId?: string) {
   const state = feedbackStateBySession.get(sessionId);
   if (!state || !state.pendingWaiter) return;
   const waiter = state.pendingWaiter;
+  if (expectedRequestId && waiter.requestId !== expectedRequestId) return;
   state.pendingWaiter = null;
   await persistFeedbackState(sessionId);
   broadcastUiState(sessionId);
+  waiter.resolve({ type: "closed", reason });
   logEvent("warn", "feedback.waiter.cleared", {
     sessionId,
     reason,
+    requestId: waiter.requestId,
     waitId: waiter.waitId,
     waitStartedAt: waiter.startedAt,
     waitDurationMs: Date.now() - Date.parse(waiter.startedAt),
+  });
+}
+
+function attachPendingWaiterCleanup(
+  req: express.Request,
+  res: express.Response,
+  sessionId: string,
+  requestId: string
+) {
+  let handled = false;
+
+  const clearIfOwned = (reason: string) => {
+    if (handled) return;
+    handled = true;
+    persistAsync(
+      "session.persistence.request_closed",
+      clearPendingWaiter(sessionId, reason, requestId)
+    );
+  };
+
+  req.once("aborted", () => {
+    logEvent("warn", "mcp.request.aborted", { sessionId, requestId, method: req.method });
+    clearIfOwned("request_aborted");
+  });
+
+  res.once("close", () => {
+    logEvent("debug", "mcp.request.closed", {
+      sessionId,
+      requestId,
+      method: req.method,
+      writableEnded: res.writableEnded,
+    });
+    clearIfOwned(res.writableEnded ? "response_closed" : "response_disconnected");
   });
 }
 
@@ -642,10 +686,12 @@ function registerServerHandlers(targetServer: Server) {
 
           const waitId = randomUUID();
           const waitStartedAt = new Date().toISOString();
-          const feedbackPromise = new Promise<string>((resolve) => {
+          const requestId = requestContext.getStore()?.requestId ?? randomUUID();
+          const feedbackPromise = new Promise<PendingFeedbackResult>((resolve) => {
             feedbackState.pendingWaiter = {
               waitId,
               startedAt: waitStartedAt,
+              requestId,
               resolve,
             };
           });
@@ -653,12 +699,13 @@ function registerServerHandlers(targetServer: Server) {
           broadcastUiState(sessionId);
           logEvent("info", "feedback.waiting", {
             sessionId,
+            requestId,
             waitId,
             waitStartedAt,
             timeoutMs: feedbackTimeout,
           });
 
-          let result: string | null;
+          let result: PendingFeedbackResult | null;
           if (feedbackTimeout > 0) {
             const timeoutPromise = new Promise<null>((resolve) =>
               setTimeout(() => resolve(null), feedbackTimeout)
@@ -677,6 +724,7 @@ function registerServerHandlers(targetServer: Server) {
             }
             logEvent("info", "feedback.wait.timeout", {
               sessionId,
+              requestId,
               waitId,
               waitStartedAt,
               waitDurationMs: Date.now() - Date.parse(waitStartedAt),
@@ -687,14 +735,29 @@ function registerServerHandlers(targetServer: Server) {
             };
           }
 
+          if (result.type === "closed") {
+            logEvent("warn", "feedback.wait.interrupted", {
+              sessionId,
+              requestId,
+              waitId,
+              waitStartedAt,
+              waitDurationMs: Date.now() - Date.parse(waitStartedAt),
+              reason: result.reason,
+            });
+            return {
+              content: [{ type: "text", text: "[WAITING] Feedback wait interrupted. Call get_feedback again to continue waiting." }],
+            };
+          }
+
           logEvent("info", "feedback.return.live", {
             sessionId,
+            requestId,
             waitId,
             waitStartedAt,
             waitDurationMs: Date.now() - Date.parse(waitStartedAt),
-            contentLength: result.length,
+            contentLength: result.content.length,
           });
-          return formatFeedbackResponse(result);
+          return formatFeedbackResponse(result.content);
         }
 
         default:
@@ -1053,13 +1116,20 @@ async function runStreamableHTTPServer() {
           createdAt: new Date().toISOString(),
           lastActivityAt: new Date().toISOString(),
         };
-      }
+        }
 
       if (!entry) {
         throw new Error("No session entry available to handle MCP request");
       }
 
-      await entry.transport.handleRequest(req, res, req.body);
+      const requestId = randomUUID();
+      if (sessionId) {
+        attachPendingWaiterCleanup(req, res, sessionId, requestId);
+      }
+
+      await requestContext.run({ requestId }, async () => {
+        await entry.transport.handleRequest(req, res, req.body);
+      });
       await persistSessionMetadata(sessionId || entry.transport.sessionId || DEFAULT_FEEDBACK_SESSION, entry);
 
       if (req.method === "DELETE" && sessionId) {

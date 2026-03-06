@@ -3,7 +3,8 @@
 TaskSync is an MCP server focused on iterative human feedback loops for coding agents.
 
 It provides:
-- `get_feedback`: session-scoped blocking feedback wait with minimal persisted feedback/session metadata
+- `get_feedback`: session-scoped feedback wait with minimal persisted feedback/session metadata
+- heartbeat mode via `[WAITING]` responses so clients can re-poll before long-idle transports are culled
 
 ## Transport Model
 
@@ -24,6 +25,8 @@ npm install
 npm run build
 node dist/index.js --port=3011 --ui-port=3456
 ```
+
+By default, TaskSync now runs `get_feedback` in heartbeat mode with a 2 minute timeout. When no human feedback is available yet, the tool returns a text response starting with `[WAITING]` so the client/agent can immediately call `get_feedback` again instead of leaving one long-lived POST request idle for many minutes.
 
 TaskSync is feedback-only and does not use workspace path arguments.
 
@@ -66,8 +69,10 @@ Optional auth headers:
 
 - `--port=<n>`: MCP Streamable HTTP port (default `3011`)
 - `--ui-port=<n>`: feedback UI port (default `3456`)
-- `--timeout=<ms>`: `get_feedback` wait timeout (`0` means block indefinitely)
+- `--timeout=<ms>`: `get_feedback` heartbeat timeout (default `120000`; use `0` to block indefinitely)
 - `--no-ui`: disable embedded feedback UI
+
+Agent prompt guidance: treat any `get_feedback` response beginning with `[WAITING]` as a keepalive/re-poll signal, not as user feedback.
 
 ## Persistence and Reconnect Behavior
 

@@ -1,8 +1,8 @@
-# Streamable HTTP Session Notes
-- Added `--streamable-http` transport mode.
-- Uses MCP session IDs (`mcp-session-id`) to isolate concurrent clients.
-- Per-session feedback queue/promise state ensures one agent session does not consume another session's feedback.
-- No TTL cleanup by design (long human wait windows supported).
-- Manual cleanup supported via `DELETE /sessions/:sessionId`.
-- Canonical multi-window routing URL: `/session/:sessionId`.
-- UI submits explicit `sessionId` to avoid race conditions when multiple sessions are active.
+TaskSync Streamable HTTP session notes (updated 2026-03-06):
+
+- Long-lived blocking `get_feedback` POST requests are being disconnected after roughly 4-5 minutes of idle time in current real-world use, likely by network/proxy/client transport behavior rather than TaskSync application logic.
+- Server-side stale waiter loss has been fixed by request-owned waiter cleanup in `index.ts`: when the underlying request disconnects, the server clears only the owning waiter and later feedback is queued instead of being lost.
+- Remaining issue: some clients (observed with OpenCode) do not promptly re-issue `get_feedback` on the same session after an interrupted wait, so UI legitimately flips from `waiting` to `idle` and late feedback queues until the client/session is manually restarted or reinitialized.
+- Decision: adopt heartbeat/poll mode as the short-term standard mitigation. Prefer the existing timeout-based `[WAITING]` response pattern over inventing semantic fake feedback. This keeps the MCP tool-call lifecycle standard: server returns a non-terminal waiting response before likely idle cutoffs, and the client/agent re-calls `get_feedback`.
+- Recommended near-term approach: configure a nonzero `get_feedback` timeout shorter than the observed disconnect window (e.g. 120000-180000 ms), document it as heartbeat mode, and update the OpenCode agent prompt to treat `[WAITING]` responses as non-semantic keepalive signals that should immediately trigger another `get_feedback` call.
+- Follow-up work: explore a local MCP mode/process to reduce remote transport fragility, but treat that as a separate architectural improvement after heartbeat mode is in place.

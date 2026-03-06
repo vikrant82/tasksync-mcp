@@ -95,3 +95,4 @@ public
 # Temporary folders
 tmp/
 temp/
+.tasksync/session-state.json
