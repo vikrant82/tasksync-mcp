@@ -9,10 +9,14 @@ import {
 } from "@modelcontextprotocol/sdk/types.js";
 import { spawn } from "child_process";
 import { randomUUID } from "crypto";
+import { appendFile, mkdir } from "node:fs/promises";
+import path from "node:path";
 import { z } from "zod";
 import { zodToJsonSchema } from "zod-to-json-schema";
 import express from "express";
 import { FEEDBACK_HTML } from "./feedback-html.js";
+import { SessionStateStore } from "./session-state-store.js";
+import { InMemoryStreamEventStore } from "./stream-event-store.js";
 
 const DEFAULT_TIMEOUT = 0; // 0 = block forever; >0 = return [WAITING] after N ms
 
@@ -25,8 +29,10 @@ const timeoutArg = args.find((arg) => arg.startsWith("--timeout="));
 const parsedTimeout = timeoutArg ? parseInt(timeoutArg.split("=")[1], 10) : NaN;
 const feedbackTimeout = Number.isNaN(parsedTimeout) ? DEFAULT_TIMEOUT : parsedTimeout;
 const logLevel = (process.env.TASKSYNC_LOG_LEVEL || "info").toLowerCase();
+const logFilePath = process.env.TASKSYNC_LOG_FILE?.trim() || "";
 
 const DEFAULT_FEEDBACK_SESSION = "__default__";
+const STREAM_RETRY_INTERVAL_MS = 2000;
 
 type FeedbackChannelState = {
   pendingWaiter: {
@@ -37,7 +43,14 @@ type FeedbackChannelState = {
   queuedFeedback: string | null;
   queuedAt: string | null;
   latestFeedback: string;
+  history: {
+    role: "user";
+    content: string;
+    createdAt: string;
+  }[];
 };
+
+const MAX_SESSION_HISTORY = 50;
 
 type StreamableSessionEntry = {
   transport: StreamableHTTPServerTransport;
@@ -54,7 +67,11 @@ const streamableSessions = new Map<string, StreamableSessionEntry>();
 const manualAliasBySession = new Map<string, string>();
 const inferredAliasBySession = new Map<string, string>();
 const clientGenerationByAlias = new Map<string, number>();
+const sessionStateStore = new SessionStateStore();
+const streamEventStore = new InMemoryStreamEventStore();
 let activeUiSessionId = DEFAULT_FEEDBACK_SESSION;
+type UiEventClient = { res: express.Response; targetSessionId: string };
+const uiEventClients = new Set<UiEventClient>();
 
 type LogLevel = "debug" | "info" | "warn" | "error";
 
@@ -78,14 +95,264 @@ function logEvent(level: LogLevel, event: string, details: Record<string, unknow
     event,
     ...details,
   };
-  console.error(`[tasksync] ${JSON.stringify(payload)}`);
+  const line = `[tasksync] ${JSON.stringify(payload)}`;
+  console.error(line);
+  if (logFilePath) {
+    void appendLogLine(line);
+  }
 }
 
-const AskReviewArgsSchema = z.object({
-  path: z.string().optional().describe("Deprecated. Ignored in in-memory mode."),
-  tail: z.number().optional().describe("Optional: last N lines of returned feedback text."),
-  head: z.number().optional().describe("Optional: first N lines of returned feedback text."),
-});
+async function appendLogLine(line: string) {
+  if (!logFilePath) return;
+  await mkdir(path.dirname(logFilePath), { recursive: true });
+  await appendFile(logFilePath, `${line}\n`, "utf8");
+}
+
+function maybeParseJson(text: string): unknown {
+  const trimmed = text.trim();
+  if (!trimmed) return "";
+  try {
+    return JSON.parse(trimmed);
+  } catch {
+    return text;
+  }
+}
+
+function parseSseDebugBody(text: string): unknown {
+  const trimmed = text.trim();
+  if (!trimmed) return "";
+
+  const blocks = trimmed.split(/\n\n+/);
+  const events = blocks
+    .map((block) => {
+      const event: Record<string, unknown> = {};
+      const dataLines: string[] = [];
+
+      for (const rawLine of block.split("\n")) {
+        const line = rawLine.replace(/\r$/, "");
+        if (!line || line.startsWith(":")) continue;
+        const separatorIndex = line.indexOf(":");
+        const field = separatorIndex >= 0 ? line.slice(0, separatorIndex) : line;
+        let value = separatorIndex >= 0 ? line.slice(separatorIndex + 1) : "";
+        if (value.startsWith(" ")) value = value.slice(1);
+
+        if (field === "data") {
+          dataLines.push(value);
+          continue;
+        }
+
+        if (field === "retry") {
+          const parsedRetry = Number(value);
+          event.retry = Number.isFinite(parsedRetry) ? parsedRetry : value;
+          continue;
+        }
+
+        event[field] = value;
+      }
+
+      if (dataLines.length > 0) {
+        const dataText = dataLines.join("\n");
+        event.data = maybeParseJson(dataText);
+      }
+
+      return Object.keys(event).length > 0 ? event : null;
+    })
+    .filter((event): event is Record<string, unknown> => event !== null);
+
+  if (events.length === 0) {
+    return text;
+  }
+
+  return {
+    sseEvents: events,
+  };
+}
+
+function normalizeDebugBody(body: unknown, contentType?: string): unknown {
+  if (Buffer.isBuffer(body)) {
+    return normalizeDebugBody(body.toString("utf8"), contentType);
+  }
+  if (body instanceof Uint8Array) {
+    return normalizeDebugBody(Buffer.from(body).toString("utf8"), contentType);
+  }
+  if (Array.isArray(body) && body.every((item) => typeof item === "number")) {
+    return normalizeDebugBody(Buffer.from(body).toString("utf8"), contentType);
+  }
+  if (typeof body === "string") {
+    if (contentType?.includes("text/event-stream")) {
+      return parseSseDebugBody(body);
+    }
+    return maybeParseJson(body);
+  }
+  if (body === undefined) {
+    return null;
+  }
+  return body;
+}
+
+function extractMcpDebugMeta(body: unknown): Record<string, unknown> {
+  if (!body || typeof body !== "object" || Array.isArray(body)) {
+    return {};
+  }
+
+  const record = body as Record<string, unknown>;
+  const method = typeof record.method === "string" ? record.method : undefined;
+  const id = typeof record.id === "string" || typeof record.id === "number" ? record.id : undefined;
+  const params = record.params && typeof record.params === "object" && !Array.isArray(record.params)
+    ? (record.params as Record<string, unknown>)
+    : undefined;
+  const result = record.result && typeof record.result === "object" && !Array.isArray(record.result)
+    ? (record.result as Record<string, unknown>)
+    : undefined;
+
+  const meta: Record<string, unknown> = {};
+  if (id !== undefined) meta.jsonRpcId = id;
+  if (method) {
+    meta.mcpMethod = method;
+    if (method === "tools/call") {
+      const toolName = typeof params?.name === "string" ? params.name : undefined;
+      if (toolName) meta.mcpToolName = toolName;
+    }
+  }
+
+  if (result) {
+    if (Array.isArray(result.tools)) {
+      meta.mcpResponseKind = "tools/list";
+      meta.mcpToolCount = result.tools.length;
+    } else if (Array.isArray(result.content)) {
+      meta.mcpResponseKind = "tools/call";
+      meta.mcpContentCount = result.content.length;
+    }
+  }
+
+  return meta;
+}
+
+function logDebugPretty(label: string, payload: unknown) {
+  if (!shouldLog("debug")) return;
+  const formatted = typeof payload === "string" ? payload : JSON.stringify(payload, null, 2);
+  const line = `[tasksync][debug] ${label}\n${formatted}`;
+  console.error(line);
+  if (logFilePath) {
+    void appendLogLine(line);
+  }
+}
+
+function resolveUiSessionTarget(rawSessionId?: string): string {
+  const requestedSessionId = getSessionId(rawSessionId || activeUiSessionId);
+  if (streamableSessions.has(requestedSessionId)) {
+    return requestedSessionId;
+  }
+  if (streamableSessions.has(activeUiSessionId)) {
+    return activeUiSessionId;
+  }
+  const firstLiveSessionId = streamableSessions.keys().next().value;
+  return typeof firstLiveSessionId === "string" ? firstLiveSessionId : DEFAULT_FEEDBACK_SESSION;
+}
+
+function buildUiStatePayload(targetSessionId?: string) {
+  const normalizedSessionId = resolveUiSessionTarget(targetSessionId);
+  const sessions = Array.from(streamableSessions.entries()).map(([sessionId, entry]) => {
+    const state = getFeedbackState(sessionId);
+    const alias = getSessionAlias(sessionId);
+    return {
+      sessionId,
+      alias,
+      sessionUrl: `http://localhost:${uiPort}/session/${encodeURIComponent(sessionId)}`,
+      createdAt: entry.createdAt,
+      lastActivityAt: entry.lastActivityAt,
+      waitingForFeedback: Boolean(state.pendingWaiter),
+      hasQueuedFeedback: Boolean(state.queuedFeedback),
+    };
+  });
+  const state = feedbackStateBySession.get(normalizedSessionId);
+  return {
+    activeUiSessionId,
+    sessionId: normalizedSessionId,
+    latestFeedback: state?.latestFeedback || "",
+    history: state?.history || [],
+    sessions,
+  };
+}
+
+function broadcastUiState(targetSessionId?: string) {
+  if (uiEventClients.size === 0) return;
+  for (const client of uiEventClients) {
+    const payload = JSON.stringify(buildUiStatePayload(targetSessionId || client.targetSessionId));
+    client.res.write(`event: state\ndata: ${payload}\n\n`);
+  }
+}
+
+function installDebugHttpLogging(app: express.Express, scope: string) {
+  app.use((req, res, next) => {
+    if (!shouldLog("debug")) {
+      next();
+      return;
+    }
+
+    const startedAt = Date.now();
+    const requestId = randomUUID();
+    const responseChunks: Buffer[] = [];
+    const originalWrite = res.write.bind(res);
+    const originalEnd = res.end.bind(res);
+
+    function toLoggedBuffer(chunk: unknown): Buffer | null {
+      if (chunk === undefined || chunk === null) return null;
+      if (Buffer.isBuffer(chunk)) return chunk;
+      if (chunk instanceof Uint8Array) return Buffer.from(chunk);
+      if (Array.isArray(chunk) && chunk.every((item) => typeof item === "number")) {
+        return Buffer.from(chunk);
+      }
+      return Buffer.from(String(chunk), "utf8");
+    }
+
+    res.write = ((chunk: unknown, ...args: unknown[]) => {
+      const loggedChunk = toLoggedBuffer(chunk);
+      if (loggedChunk) {
+        responseChunks.push(loggedChunk);
+      }
+      return originalWrite(chunk as never, ...(args as Parameters<typeof originalWrite> extends [unknown, ...infer Rest] ? Rest : never));
+    }) as typeof res.write;
+
+    res.end = ((chunk?: unknown, ...args: unknown[]) => {
+      const loggedChunk = toLoggedBuffer(chunk);
+      if (loggedChunk) {
+        responseChunks.push(loggedChunk);
+      }
+      return originalEnd(chunk as never, ...(args as Parameters<typeof originalEnd> extends [unknown?, ...infer Rest] ? Rest : never));
+    }) as typeof res.end;
+
+    logDebugPretty(`${scope}.request`, {
+      requestId,
+      method: req.method,
+      path: req.path,
+      query: req.query,
+      headers: req.headers,
+      ...extractMcpDebugMeta(normalizeDebugBody(req.body, String(req.headers["content-type"] || ""))),
+      body: normalizeDebugBody(req.body, String(req.headers["content-type"] || "")),
+    });
+
+    res.on("finish", () => {
+      const rawBody = Buffer.concat(responseChunks).toString("utf8");
+      const responseContentType = String(res.getHeader("content-type") || "");
+      const normalizedResponseBody = normalizeDebugBody(rawBody, responseContentType);
+      logDebugPretty(`${scope}.response`, {
+        requestId,
+        method: req.method,
+        path: req.path,
+        statusCode: res.statusCode,
+        durationMs: Date.now() - startedAt,
+        headers: res.getHeaders(),
+        ...extractMcpDebugMeta(normalizedResponseBody),
+        body: normalizedResponseBody,
+      });
+    });
+
+    next();
+  });
+}
+
+const GetFeedbackArgsSchema = z.object({}).strict();
 
 type ToolInput = {
   type: "object";
@@ -107,26 +374,143 @@ function getFeedbackState(sessionId: string): FeedbackChannelState {
     queuedFeedback: null,
     queuedAt: null,
     latestFeedback: "",
+    history: [],
   };
   feedbackStateBySession.set(sessionId, created);
   logEvent("debug", "feedback.state.created", { sessionId });
   return created;
 }
 
-function nextClientGeneration(alias: string): number {
+function toPersistedFeedbackState(sessionId: string) {
+  const state = getFeedbackState(sessionId);
+  return {
+    queuedFeedback: state.queuedFeedback,
+    queuedAt: state.queuedAt,
+    latestFeedback: state.latestFeedback,
+    history: state.history,
+  };
+}
+
+function appendFeedbackHistory(sessionId: string, content: string) {
+  const state = getFeedbackState(sessionId);
+  state.history.push({
+    role: "user",
+    content,
+    createdAt: new Date().toISOString(),
+  });
+  if (state.history.length > MAX_SESSION_HISTORY) {
+    state.history.splice(0, state.history.length - MAX_SESSION_HISTORY);
+  }
+}
+
+async function persistFeedbackState(sessionId: string) {
+  await sessionStateStore.saveFeedbackState(sessionId, toPersistedFeedbackState(sessionId));
+  logEvent("debug", "session.state.persisted", { sessionId, kind: "feedback" });
+}
+
+async function persistActiveUiSession() {
+  await sessionStateStore.setActiveUiSessionId(activeUiSessionId);
+  logEvent("debug", "session.state.persisted", {
+    sessionId: activeUiSessionId,
+    kind: "active_ui_session",
+  });
+}
+
+async function persistSessionMetadata(sessionId: string, entry: StreamableSessionEntry) {
+  await sessionStateStore.saveSessionMetadata(sessionId, {
+    sessionId,
+    transportId: entry.transportId,
+    clientAlias: entry.clientAlias,
+    clientGeneration: entry.clientGeneration,
+    createdAt: entry.createdAt,
+    lastActivityAt: entry.lastActivityAt,
+    status: "active",
+  });
+  logEvent("debug", "session.state.persisted", {
+    sessionId,
+    kind: "session_metadata",
+    transportId: entry.transportId,
+  });
+}
+
+function persistAsync(task: string, work: Promise<void>) {
+  void work.catch((error) => {
+    logEvent("error", task, { error: String(error) });
+  });
+}
+
+async function reassociatePersistedStateForAlias(sessionId: string, clientAlias: string) {
+  const destState = getFeedbackState(sessionId);
+  for (const [otherId, srcState] of feedbackStateBySession.entries()) {
+    if (otherId === sessionId) continue;
+    if (getSessionAlias(otherId) !== clientAlias) continue;
+    if (!srcState.queuedFeedback || destState.queuedFeedback) continue;
+
+    destState.queuedFeedback = srcState.queuedFeedback;
+    destState.queuedAt = srcState.queuedAt;
+    srcState.queuedFeedback = null;
+    srcState.queuedAt = null;
+
+    await persistFeedbackState(sessionId);
+    await persistFeedbackState(otherId);
+
+    logEvent("info", "session.reassociated", {
+      fromSessionId: otherId,
+      toSessionId: sessionId,
+      clientAlias,
+      queuedAt: destState.queuedAt,
+      contentLength: destState.queuedFeedback.length,
+    });
+    return;
+  }
+}
+
+async function hydratePersistedState() {
+  const snapshot = await sessionStateStore.load();
+
+  activeUiSessionId = getSessionId(snapshot.activeUiSessionId);
+
+  for (const [sessionId, persistedState] of Object.entries(snapshot.feedbackBySession)) {
+    feedbackStateBySession.set(sessionId, {
+      pendingWaiter: null,
+      queuedFeedback: persistedState.queuedFeedback,
+      queuedAt: persistedState.queuedAt,
+      latestFeedback: persistedState.latestFeedback,
+      history: Array.isArray(persistedState.history) ? persistedState.history : [],
+    });
+  }
+
+  for (const [sessionId, alias] of Object.entries(snapshot.manualAliasBySession)) {
+    manualAliasBySession.set(sessionId, alias);
+  }
+
+  for (const [sessionId, alias] of Object.entries(snapshot.inferredAliasBySession)) {
+    inferredAliasBySession.set(sessionId, alias);
+  }
+
+  for (const [alias, generation] of Object.entries(snapshot.clientGenerationByAlias)) {
+    clientGenerationByAlias.set(alias, generation);
+  }
+
+  logEvent("info", "session.state.hydrated", {
+    feedbackSessions: feedbackStateBySession.size,
+    liveSessions: streamableSessions.size,
+    persistedSessionMetadata: Object.keys(snapshot.sessionMetadataById).length,
+    manualAliases: manualAliasBySession.size,
+    inferredAliases: inferredAliasBySession.size,
+    activeUiSessionId,
+  });
+}
+
+async function nextClientGeneration(alias: string): Promise<number> {
   const nextGeneration = (clientGenerationByAlias.get(alias) ?? 0) + 1;
   clientGenerationByAlias.set(alias, nextGeneration);
+  await sessionStateStore.setClientGeneration(alias, nextGeneration);
   return nextGeneration;
 }
 
-function formatResponseWithHeadTail(content: string, head?: number, tail?: number): { content: { type: "text"; text: string }[] } {
-  if (head && tail) {
-    throw new Error("Cannot specify both head and tail parameters simultaneously");
-  }
-
-  const lines = content.split("\n");
-  const selected = tail ? lines.slice(-tail) : head ? lines.slice(0, head) : lines;
-  return { content: [{ type: "text", text: selected.join("\n") }] };
+function formatFeedbackResponse(content: string): { content: { type: "text"; text: string }[] } {
+  return { content: [{ type: "text", text: content }] };
 }
 
 function normalizeAlias(raw: unknown): string {
@@ -151,7 +535,7 @@ function inferAliasFromInitializeBody(body: unknown): string {
   return version ? `${name} ${version}` : name;
 }
 
-function resolvePendingFeedback(content: string, rawSessionId?: string): boolean {
+async function resolvePendingFeedback(content: string, rawSessionId?: string): Promise<boolean> {
   const sessionId = getSessionId(rawSessionId);
   const state = getFeedbackState(sessionId);
   const queuedAt = new Date().toISOString();
@@ -167,6 +551,8 @@ function resolvePendingFeedback(content: string, rawSessionId?: string): boolean
     const waiter = state.pendingWaiter;
     state.pendingWaiter = null;
     state.queuedAt = null;
+    await persistFeedbackState(sessionId);
+    broadcastUiState(sessionId);
     waiter.resolve(content);
     logEvent("info", "feedback.delivered.to_waiter", {
       sessionId,
@@ -180,6 +566,8 @@ function resolvePendingFeedback(content: string, rawSessionId?: string): boolean
 
   state.queuedFeedback = content;
   state.queuedAt = queuedAt;
+  await persistFeedbackState(sessionId);
+  broadcastUiState(sessionId);
   logEvent("info", "feedback.queued", {
     sessionId,
     queuedAt,
@@ -188,11 +576,13 @@ function resolvePendingFeedback(content: string, rawSessionId?: string): boolean
   return false;
 }
 
-function clearPendingWaiter(sessionId: string, reason: string) {
+async function clearPendingWaiter(sessionId: string, reason: string) {
   const state = feedbackStateBySession.get(sessionId);
   if (!state || !state.pendingWaiter) return;
   const waiter = state.pendingWaiter;
   state.pendingWaiter = null;
+  await persistFeedbackState(sessionId);
+  broadcastUiState(sessionId);
   logEvent("warn", "feedback.waiter.cleared", {
     sessionId,
     reason,
@@ -209,9 +599,9 @@ function registerServerHandlers(targetServer: Server) {
         {
           name: "get_feedback",
           description:
-            "Wait for human feedback in a session-scoped in-memory queue. " +
+            "Wait for human feedback for the current session. " +
             "This call blocks until feedback is submitted from the TaskSync UI or timeout is reached.",
-          inputSchema: zodToJsonSchema(AskReviewArgsSchema, { target: "openApi3" }) as ToolInput,
+          inputSchema: zodToJsonSchema(GetFeedbackArgsSchema, { target: "openApi3" }) as ToolInput,
         },
       ],
     };
@@ -222,12 +612,14 @@ function registerServerHandlers(targetServer: Server) {
       const { name, arguments: args } = request.params;
       const sessionId = getSessionId(extra?.sessionId);
       activeUiSessionId = sessionId;
+      await persistActiveUiSession();
+      broadcastUiState(sessionId);
       const feedbackState = getFeedbackState(sessionId);
       logEvent("debug", "mcp.tool.call", { tool: name, sessionId });
 
       switch (name) {
         case "get_feedback": {
-          const parsed = AskReviewArgsSchema.safeParse(args);
+          const parsed = GetFeedbackArgsSchema.safeParse(args ?? {});
           if (!parsed.success) {
             throw new Error(`Invalid arguments for get_feedback: ${parsed.error}`);
           }
@@ -237,13 +629,15 @@ function registerServerHandlers(targetServer: Server) {
             const queuedAt = feedbackState.queuedAt;
             feedbackState.queuedFeedback = null;
             feedbackState.queuedAt = null;
+            await persistFeedbackState(sessionId);
+            broadcastUiState(sessionId);
             logEvent("info", "feedback.return.queued", {
               sessionId,
               queuedAt,
               queuedDurationMs: queuedAt ? Date.now() - Date.parse(queuedAt) : undefined,
               contentLength: content.length,
             });
-            return formatResponseWithHeadTail(content, parsed.data.head, parsed.data.tail);
+            return formatFeedbackResponse(content);
           }
 
           const waitId = randomUUID();
@@ -255,6 +649,8 @@ function registerServerHandlers(targetServer: Server) {
               resolve,
             };
           });
+          await persistFeedbackState(sessionId);
+          broadcastUiState(sessionId);
           logEvent("info", "feedback.waiting", {
             sessionId,
             waitId,
@@ -276,6 +672,8 @@ function registerServerHandlers(targetServer: Server) {
             const timedOutWaiter = feedbackState.pendingWaiter;
             if (timedOutWaiter?.waitId === waitId) {
               feedbackState.pendingWaiter = null;
+              await persistFeedbackState(sessionId);
+              broadcastUiState(sessionId);
             }
             logEvent("info", "feedback.wait.timeout", {
               sessionId,
@@ -296,7 +694,7 @@ function registerServerHandlers(targetServer: Server) {
             waitDurationMs: Date.now() - Date.parse(waitStartedAt),
             contentLength: result.length,
           });
-          return formatResponseWithHeadTail(result, parsed.data.head, parsed.data.tail);
+          return formatFeedbackResponse(result);
         }
 
         default:
@@ -331,12 +729,13 @@ function startFeedbackUI() {
   const feedbackApp = express();
   feedbackApp.use(express.urlencoded({ extended: true }));
   feedbackApp.use(express.json());
+  installDebugHttpLogging(feedbackApp, "ui.http");
 
   function renderHtml(): string {
     const activeAlias = getSessionAlias(activeUiSessionId);
     const activeLabel = activeAlias ? `${activeAlias} (${activeUiSessionId})` : activeUiSessionId;
     return FEEDBACK_HTML
-      .replace("FEEDBACK_PATH", "in-memory feedback queue (non-persistent)")
+      .replace("FEEDBACK_PATH", "persisted feedback queue + replayable stream history")
       .replace("ACTIVE_SESSION_INFO", `Active session: ${activeLabel} | Known sessions: ${streamableSessions.size}`);
   }
 
@@ -348,37 +747,38 @@ function startFeedbackUI() {
     res.type("html").send(renderHtml());
   });
 
-  feedbackApp.get("/feedback", (req, res) => {
+  feedbackApp.get("/events", (req, res) => {
+    const targetSessionId = typeof req.query.sessionId === "string" ? req.query.sessionId.trim() : "";
+    const resolvedSessionId = resolveUiSessionTarget(targetSessionId);
+    res.setHeader("Content-Type", "text/event-stream");
+    res.setHeader("Cache-Control", "no-cache, no-transform");
+    res.setHeader("Connection", "keep-alive");
+    res.flushHeaders?.();
+    const client = { res, targetSessionId: resolvedSessionId };
+    uiEventClients.add(client);
+    res.write(`event: state\ndata: ${JSON.stringify(buildUiStatePayload(resolvedSessionId))}\n\n`);
+    req.on("close", () => {
+      uiEventClients.delete(client);
+    });
+  });
+
+  feedbackApp.get("/feedback/history", (req, res) => {
     const querySession = typeof req.query.sessionId === "string" ? req.query.sessionId : "";
-    const targetSessionId = querySession.trim() || activeUiSessionId;
-    const normalizedSessionId = getSessionId(targetSessionId);
+    const normalizedSessionId = resolveUiSessionTarget(querySession.trim());
     const state = feedbackStateBySession.get(normalizedSessionId);
-    res.type("text").send(state?.latestFeedback || "");
+    res.json({ sessionId: normalizedSessionId, history: state?.history || [] });
   });
 
   feedbackApp.get("/sessions", (_req, res) => {
-    const sessions = Array.from(streamableSessions.entries()).map(([sessionId, entry]) => {
-      const state = getFeedbackState(sessionId);
-      const alias = getSessionAlias(sessionId);
-      return {
-        sessionId,
-        alias,
-        sessionUrl: `${uiBaseUrl}/session/${encodeURIComponent(sessionId)}`,
-        createdAt: entry.createdAt,
-        lastActivityAt: entry.lastActivityAt,
-        waitingForFeedback: Boolean(state.pendingWaiter),
-        hasQueuedFeedback: Boolean(state.queuedFeedback),
-      };
-    });
-
+    const payload = buildUiStatePayload();
     res.json({
-      defaultUiSessionId: activeUiSessionId,
-      activeUiSessionId,
-      sessions,
+      defaultUiSessionId: payload.activeUiSessionId,
+      activeUiSessionId: payload.activeUiSessionId,
+      sessions: payload.sessions,
     });
   });
 
-  const setDefaultSessionHandler = (req: express.Request, res: express.Response) => {
+  const setDefaultSessionHandler = async (req: express.Request, res: express.Response) => {
     const sessionId = typeof req.body?.sessionId === "string" ? req.body.sessionId.trim() : "";
     if (!sessionId || !streamableSessions.has(sessionId)) {
       logEvent("warn", "ui.sessions.active.invalid", { sessionId });
@@ -387,6 +787,8 @@ function startFeedbackUI() {
     }
 
     activeUiSessionId = sessionId;
+    await persistActiveUiSession();
+    broadcastUiState(sessionId);
     logEvent("info", "ui.sessions.active.set", { sessionId });
     res.json({
       ok: true,
@@ -398,7 +800,7 @@ function startFeedbackUI() {
   feedbackApp.post("/sessions/default", setDefaultSessionHandler);
   feedbackApp.post("/sessions/active", setDefaultSessionHandler);
 
-  feedbackApp.post("/sessions/:sessionId/alias", (req, res) => {
+  feedbackApp.post("/sessions/:sessionId/alias", async (req, res) => {
     const sessionId = req.params.sessionId;
     if (!sessionId || !streamableSessions.has(sessionId)) {
       logEvent("warn", "ui.sessions.alias.invalid", { sessionId });
@@ -409,9 +811,13 @@ function startFeedbackUI() {
     const alias = normalizeAlias(req.body?.alias);
     if (alias) {
       manualAliasBySession.set(sessionId, alias);
+      await sessionStateStore.setManualAlias(sessionId, alias);
+      broadcastUiState(sessionId);
       logEvent("info", "ui.sessions.alias.set", { sessionId, alias });
     } else {
       manualAliasBySession.delete(sessionId);
+      await sessionStateStore.setManualAlias(sessionId, null);
+      broadcastUiState(sessionId);
       logEvent("info", "ui.sessions.alias.cleared", { sessionId });
     }
 
@@ -429,13 +835,17 @@ function startFeedbackUI() {
 
     try {
       await session.transport.close();
+      await clearPendingWaiter(sessionId, "ui_delete");
       streamableSessions.delete(sessionId);
       feedbackStateBySession.delete(sessionId);
       manualAliasBySession.delete(sessionId);
       inferredAliasBySession.delete(sessionId);
       if (activeUiSessionId === sessionId) {
         activeUiSessionId = DEFAULT_FEEDBACK_SESSION;
+        await persistActiveUiSession();
       }
+      await sessionStateStore.deleteSession(sessionId);
+      broadcastUiState();
       logEvent("info", "ui.sessions.delete.ok", { sessionId });
       res.json({ ok: true });
     } catch (error) {
@@ -444,23 +854,27 @@ function startFeedbackUI() {
     }
   });
 
-  feedbackApp.post("/feedback", (req, res) => {
+  feedbackApp.post("/feedback", async (req, res) => {
     try {
       const content = typeof req.body === "string" ? req.body : req.body.content ?? "";
       const requestedSessionId = typeof req.body?.sessionId === "string" ? req.body.sessionId.trim() : "";
-      const targetSessionId = requestedSessionId || activeUiSessionId;
-      const normalizedSessionId = getSessionId(targetSessionId);
+      const normalizedSessionId = resolveUiSessionTarget(requestedSessionId);
 
       const state = getFeedbackState(normalizedSessionId);
       state.latestFeedback = content;
+      if (content.trim().length > 0) {
+        appendFeedbackHistory(normalizedSessionId, content);
+      }
+      await persistFeedbackState(normalizedSessionId);
       logEvent("info", "ui.feedback.post", {
         requestedSessionId,
         targetSessionId: normalizedSessionId,
         contentLength: content.length,
       });
       if (content.trim().length > 0) {
-        resolvePendingFeedback(content, normalizedSessionId);
+        await resolvePendingFeedback(content, normalizedSessionId);
       }
+      broadcastUiState(normalizedSessionId);
 
       res.json({ ok: true, sessionId: normalizedSessionId });
     } catch (err) {
@@ -505,6 +919,7 @@ function startFeedbackUI() {
 }
 
 async function runStreamableHTTPServer() {
+  await hydratePersistedState();
   const app = express();
 
   app.use((req, res, next) => {
@@ -520,6 +935,7 @@ async function runStreamableHTTPServer() {
   });
 
   app.use(express.json());
+  installDebugHttpLogging(app, "mcp.http");
 
   const mcpHandler = async (req: express.Request, res: express.Response) => {
     try {
@@ -571,16 +987,19 @@ async function runStreamableHTTPServer() {
         const sessionServer = createSessionServer();
         const inferredAlias = inferAliasFromInitializeBody(req.body);
         const clientAlias = inferredAlias || "unknown-client";
-        const clientGeneration = nextClientGeneration(clientAlias);
+        const clientGeneration = await nextClientGeneration(clientAlias);
         const transportId = randomUUID();
         let createdTransport: StreamableHTTPServerTransport;
         createdTransport = new StreamableHTTPServerTransport({
           sessionIdGenerator: () => randomUUID(),
+          eventStore: streamEventStore as never,
+          retryInterval: STREAM_RETRY_INTERVAL_MS,
           onsessioninitialized: (initializedSessionId) => {
             if (inferredAlias) {
               inferredAliasBySession.set(initializedSessionId, inferredAlias);
+              persistAsync("session.persistence.inferred_alias", sessionStateStore.setInferredAlias(initializedSessionId, inferredAlias));
             }
-            streamableSessions.set(initializedSessionId, {
+            const sessionEntry: StreamableSessionEntry = {
               transport: createdTransport,
               server: sessionServer,
               transportId,
@@ -588,32 +1007,14 @@ async function runStreamableHTTPServer() {
               clientGeneration,
               createdAt: new Date().toISOString(),
               lastActivityAt: new Date().toISOString(),
-            });
-            // If this client alias had queued feedback on a previous session, migrate it
-            try {
-              const destState = getFeedbackState(initializedSessionId);
-              for (const [otherId, otherEntry] of streamableSessions.entries()) {
-                if (otherId === initializedSessionId) continue;
-                if (otherEntry.clientAlias === clientAlias) {
-                  const srcState = getFeedbackState(otherId);
-                  if (srcState.queuedFeedback && !destState.queuedFeedback) {
-                    destState.queuedFeedback = srcState.queuedFeedback;
-                    destState.queuedAt = srcState.queuedAt;
-                    srcState.queuedFeedback = null;
-                    srcState.queuedAt = null;
-                    logEvent("info", "feedback.migrated", {
-                      fromSessionId: otherId,
-                      toSessionId: initializedSessionId,
-                      queuedAt: destState.queuedAt,
-                      contentLength: destState.queuedFeedback.length,
-                    });
-                    break;
-                  }
-                }
-              }
-            } catch (e) {
-              logEvent("warn", "feedback.migration.failed", { error: String(e), sessionId: initializedSessionId });
-            }
+            };
+            streamableSessions.set(initializedSessionId, sessionEntry);
+            broadcastUiState(initializedSessionId);
+            persistAsync("session.persistence.created", (async () => {
+              await persistSessionMetadata(initializedSessionId, sessionEntry);
+              await persistFeedbackState(initializedSessionId);
+              await reassociatePersistedStateForAlias(initializedSessionId, clientAlias);
+            })());
             logEvent("info", "mcp.session.created", {
               sessionId: initializedSessionId,
               transportId,
@@ -628,7 +1029,8 @@ async function runStreamableHTTPServer() {
         createdTransport.onclose = () => {
           const closedSessionId = createdTransport.sessionId;
           if (!closedSessionId) return;
-          clearPendingWaiter(closedSessionId, "stream_closed");
+          persistAsync("session.persistence.stream_closed", clearPendingWaiter(closedSessionId, "stream_closed"));
+          broadcastUiState(closedSessionId);
           const closedEntry = streamableSessions.get(closedSessionId);
           // Stream closures can be transient (for example SSE reconnects).
           // Keep session state unless an explicit DELETE/session disconnect occurs.
@@ -658,16 +1060,20 @@ async function runStreamableHTTPServer() {
       }
 
       await entry.transport.handleRequest(req, res, req.body);
+      await persistSessionMetadata(sessionId || entry.transport.sessionId || DEFAULT_FEEDBACK_SESSION, entry);
 
       if (req.method === "DELETE" && sessionId) {
-        clearPendingWaiter(sessionId, "explicit_delete");
+        await clearPendingWaiter(sessionId, "explicit_delete");
         streamableSessions.delete(sessionId);
         feedbackStateBySession.delete(sessionId);
         manualAliasBySession.delete(sessionId);
         inferredAliasBySession.delete(sessionId);
         if (activeUiSessionId === sessionId) {
           activeUiSessionId = DEFAULT_FEEDBACK_SESSION;
+          await persistActiveUiSession();
         }
+        await sessionStateStore.deleteSession(sessionId);
+        broadcastUiState();
         logEvent("info", "mcp.session.closed", {
           sessionId,
           transportId: entry.transportId,
@@ -701,7 +1107,7 @@ async function runStreamableHTTPServer() {
       version: "1.0.0",
       transport: "streamable-http",
       sessions: streamableSessions.size,
-      persistence: "none",
+      persistence: "file-backed minimal session state; transient in-memory replay",
     });
   });
 

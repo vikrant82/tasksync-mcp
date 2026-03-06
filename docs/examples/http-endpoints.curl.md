@@ -13,10 +13,10 @@ MCP_BASE="http://localhost:3011"
 curl -s "$MCP_BASE/health" | jq .
 ```
 
-## Read Current Feedback
+## Read Feedback History
 
 ```bash
-curl -s "$UI_BASE/feedback"
+curl -s "$UI_BASE/feedback/history" | jq .
 ```
 
 ## Submit Feedback (active/default session routing)

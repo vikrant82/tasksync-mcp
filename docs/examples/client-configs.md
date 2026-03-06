@@ -114,4 +114,5 @@ You should see both `tasksync-serena` and `tasksync` available.
 - MCP endpoint: `http://localhost:3011/mcp`
 - Feedback UI: `http://localhost:3456`
 - Session-specific UI route: `http://localhost:3456/session/<sessionId>`
-- Feedback is session-scoped and in-memory (non-persistent)
+- Feedback is session-scoped with minimal persisted local state
+- After a server restart, clients should initialize a fresh MCP session rather than reusing an old session ID

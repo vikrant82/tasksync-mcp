@@ -58,7 +58,7 @@ while true:
 
 ## 2) Calling get_feedback
 
-Call `get_feedback` with no arguments. The server manages session-scoped in-memory feedback queues automatically. Feedback can be provided via the embedded web UI or feedback HTTP endpoints.
+Call `get_feedback` with no arguments. The server manages session-scoped feedback state automatically. Feedback can be provided via the embedded web UI, its SSE-driven session views, or feedback HTTP endpoints.
 
 ---
 

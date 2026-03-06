@@ -17,15 +17,14 @@ export const FEEDBACK_HTML = `<!DOCTYPE html>
   body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif; background: var(--bg); color: var(--fg); min-height: 100vh; display: flex; flex-direction: column; align-items: center; padding: 2rem 1rem; }
   h1 { font-size: 1.5rem; margin-bottom: 0.5rem; color: var(--accent); }
   .subtitle { color: var(--muted); font-size: 0.85rem; margin-bottom: 1.5rem; }
-  .container { width: 100%; max-width: 640px; }
-  .panel { margin-top: 1rem; background: var(--input-bg); border: 1px solid var(--border); border-radius: 6px; padding: 0.75rem; }
+  .container { width: 100%; max-width: 1400px; }
+  .layout { display: grid; grid-template-columns: minmax(0, 1.6fr) minmax(320px, 0.9fr); gap: 1rem; align-items: start; }
+  .main-column, .sidebar-column { display: flex; flex-direction: column; gap: 1rem; }
+  .panel { margin-top: 0; background: var(--input-bg); border: 1px solid var(--border); border-radius: 6px; padding: 0.75rem; }
   .panel h2 { font-size: 0.95rem; color: var(--muted); margin-bottom: 0.5rem; }
   .session-meta { font-size: 0.8rem; color: var(--muted); margin-bottom: 0.5rem; }
   .notify-controls { display: flex; gap: 0.75rem; align-items: center; font-size: 0.78rem; color: var(--muted); margin: 0.35rem 0 0.6rem; }
   .notify-controls label { display: inline-flex; align-items: center; gap: 0.3rem; cursor: pointer; }
-  .help-panel { margin: 0 0 0.65rem; padding: 0.55rem 0.65rem; border: 1px solid var(--border); border-radius: 6px; background: rgba(88,166,255,0.06); }
-  .help-title { font-size: 0.78rem; color: #b9d8ff; margin-bottom: 0.35rem; font-weight: 600; }
-  .help-line { font-size: 0.74rem; color: var(--muted); margin: 0.2rem 0; line-height: 1.4; }
   .session-actions { display: flex; gap: 0.5rem; margin-bottom: 0.5rem; }
   .session-actions input { flex: 1; padding: 0.45rem 0.55rem; background: var(--bg); color: var(--fg); border: 1px solid var(--border); border-radius: 6px; font-family: monospace; font-size: 0.8rem; }
   .session-list { list-style: none; display: flex; flex-direction: column; gap: 0.45rem; max-height: 220px; overflow-y: auto; }
@@ -66,11 +65,21 @@ export const FEEDBACK_HTML = `<!DOCTYPE html>
   .status { margin-top: 0.75rem; padding: 0.5rem 0.75rem; border-radius: 6px; font-size: 0.85rem; display: none; }
   .status.success { display: block; background: rgba(63,185,80,0.15); color: var(--success); border: 1px solid rgba(63,185,80,0.3); }
   .status.error { display: block; background: rgba(248,81,73,0.15); color: #f85149; border: 1px solid rgba(248,81,73,0.3); }
-  .current { margin-top: 1.5rem; }
-  .current h2 { font-size: 0.95rem; color: var(--muted); margin-bottom: 0.5rem; }
-  .current pre { background: var(--input-bg); border: 1px solid var(--border); border-radius: 6px; padding: 0.75rem; font-size: 0.8rem; white-space: pre-wrap; word-wrap: break-word; max-height: 300px; overflow-y: auto; color: var(--muted); }
+  .history-list { display: flex; flex-direction: column; gap: 0.6rem; }
+  .history-panel-header { display: flex; align-items: center; justify-content: space-between; gap: 0.75rem; margin-bottom: 0.5rem; }
+  .history-summary { font-size: 0.78rem; color: var(--muted); }
+  .history-scroll { max-height: 360px; overflow-y: auto; padding-right: 0.2rem; }
+  .history-scroll.collapsed { display: none; }
+  .history-controls { display: inline-flex; align-items: center; gap: 0.45rem; }
+  .history-jump.hidden { display: none; }
+  .history-item { border: 1px solid var(--border); border-radius: 6px; padding: 0.75rem; background: rgba(255,255,255,0.02); }
+  .history-meta { font-size: 0.74rem; color: var(--muted); margin-bottom: 0.35rem; }
+  .history-content { white-space: pre-wrap; word-break: break-word; font-size: 0.84rem; }
   .filepath { color: var(--muted); font-size: 0.75rem; margin-bottom: 1rem; font-family: monospace; }
   kbd { background: var(--border); padding: 0.1rem 0.4rem; border-radius: 3px; font-size: 0.8rem; }
+  @media (max-width: 980px) {
+    .layout { grid-template-columns: 1fr; }
+  }
 </style>
 </head>
 <body>
@@ -80,51 +89,73 @@ export const FEEDBACK_HTML = `<!DOCTYPE html>
   <div class="filepath">Feedback transport: FEEDBACK_PATH</div>
   <div class="filepath">ACTIVE_SESSION_INFO</div>
   <div id="wait-banner" class="wait-banner idle">Checking agent wait state...</div>
-  <form id="form">
-    <textarea id="feedback" class="feedback-box" placeholder="Type your feedback here..." autofocus></textarea>
-    <div class="actions">
-      <button type="submit" class="btn-primary">Send Feedback</button>
-      <button type="button" class="btn-secondary" onclick="clearFeedback()">Clear Draft</button>
+  <div class="layout">
+    <div class="main-column">
+      <div class="panel">
+        <h2>Send feedback</h2>
+        <form id="form">
+          <textarea id="feedback" class="feedback-box" placeholder="Type your feedback here..." autofocus></textarea>
+          <div class="actions">
+            <button type="submit" class="btn-primary">Send Feedback</button>
+            <button type="button" class="btn-secondary" onclick="clearFeedback()">Clear Draft</button>
+          </div>
+        </form>
+        <div id="status" class="status"></div>
+      </div>
+      <div class="panel">
+        <div class="history-panel-header">
+          <h2>Conversation history</h2>
+          <div class="history-controls">
+            <span id="history-summary" class="history-summary">Loading...</span>
+            <button type="button" id="history-jump" class="btn-secondary btn-small history-jump hidden">Jump to latest</button>
+            <button type="button" id="history-toggle" class="btn-secondary btn-small">Collapse</button>
+          </div>
+        </div>
+        <div id="history-scroll" class="history-scroll">
+          <div id="history-list" class="history-list">
+            <div class="history-item"><div class="history-content">Loading...</div></div>
+          </div>
+        </div>
+      </div>
     </div>
-  </form>
-  <div id="status" class="status"></div>
-  <div class="panel">
-    <h2>Sessions</h2>
-    <div id="session-meta" class="session-meta">Loading sessions...</div>
-    <div class="notify-controls">
-      <label><input id="notify-sound" type="checkbox" checked /> Sound alert</label>
-      <label><input id="notify-desktop" type="checkbox" /> Desktop alert</label>
-      <label>Mode:
-        <select id="notify-mode">
-          <option value="focused">Focused session</option>
-          <option value="all">All sessions</option>
-        </select>
-      </label>
+    <div class="sidebar-column">
+      <div class="panel">
+        <h2>Sessions</h2>
+        <div id="session-meta" class="session-meta">Loading sessions...</div>
+        <div class="session-actions">
+          <input id="active-session-input" placeholder="Session ID to set as default" />
+          <button type="button" class="btn-secondary btn-small" onclick="setActiveFromInput()">Set Default</button>
+          <button type="button" class="btn-secondary btn-small" onclick="loadSessions()">Refresh</button>
+        </div>
+        <ul id="session-list" class="session-list"></ul>
+      </div>
+      <div class="panel">
+        <h2>Settings</h2>
+        <div class="notify-controls">
+          <label><input id="notify-sound" type="checkbox" checked /> Sound alert</label>
+          <label><input id="notify-desktop" type="checkbox" /> Desktop alert</label>
+          <label>Mode:
+            <select id="notify-mode">
+              <option value="focused">Focused session</option>
+              <option value="all">All sessions</option>
+            </select>
+          </label>
+        </div>
+      </div>
     </div>
-    <div class="help-panel">
-      <div class="help-title">Session + Notification Help</div>
-      <div class="help-line"><strong>waiting</strong>: session is blocked on <code>get_feedback</code> now.</div>
-      <div class="help-line"><strong>route-target</strong>: this tab will send feedback to this session.</div>
-      <div class="help-line">If sound does not play, click anywhere once to unlock browser audio.</div>
-      <div class="help-line">If desktop alerts do not appear, enable permission in browser site settings.</div>
-    </div>
-    <div class="session-actions">
-      <input id="active-session-input" placeholder="Session ID to set as default" />
-      <button type="button" class="btn-secondary btn-small" onclick="setActiveFromInput()">Set Default</button>
-      <button type="button" class="btn-secondary btn-small" onclick="loadSessions()">Refresh</button>
-    </div>
-    <ul id="session-list" class="session-list"></ul>
-  </div>
-  <div class="current">
-    <h2>Current session feedback draft:</h2>
-    <pre id="current-content">Loading...</pre>
   </div>
 </div>
 <script>
   const form = document.getElementById('form');
   const textbox = document.getElementById('feedback');
   const statusEl = document.getElementById('status');
-  const currentEl = document.getElementById('current-content');
+  const historyListEl = document.getElementById('history-list');
+  const historyScrollEl = document.getElementById('history-scroll');
+  const historySummaryEl = document.getElementById('history-summary');
+  const historyJumpEl = document.getElementById('history-jump');
+  const historyToggleEl = document.getElementById('history-toggle');
+  let uiEventSource = null;
+  let lastRenderedHistorySignature = '';
   const waitBannerEl = document.getElementById('wait-banner');
   const sessionMetaEl = document.getElementById('session-meta');
   const sessionListEl = document.getElementById('session-list');
@@ -138,6 +169,7 @@ export const FEEDBACK_HTML = `<!DOCTYPE html>
   const STORAGE_NOTIFY_SOUND = 'tasksync.notify.sound';
   const STORAGE_NOTIFY_DESKTOP = 'tasksync.notify.desktop';
   const STORAGE_NOTIFY_MODE = 'tasksync.notify.mode';
+  const STORAGE_HISTORY_COLLAPSED = 'tasksync.history.collapsed';
   let lastWaitSignature = '';
   const notifiedSessions = new Set();
   const previousWaitBySession = new Map();
@@ -147,6 +179,7 @@ export const FEEDBACK_HTML = `<!DOCTYPE html>
   notifySoundEl.checked = localStorage.getItem(STORAGE_NOTIFY_SOUND) !== '0';
   notifyDesktopEl.checked = localStorage.getItem(STORAGE_NOTIFY_DESKTOP) === '1';
   notifyModeEl.value = localStorage.getItem(STORAGE_NOTIFY_MODE) || 'focused';
+  let historyCollapsed = localStorage.getItem(STORAGE_HISTORY_COLLAPSED) === '1';
 
   notifySoundEl.addEventListener('change', () => {
     localStorage.setItem(STORAGE_NOTIFY_SOUND, notifySoundEl.checked ? '1' : '0');
@@ -168,6 +201,43 @@ export const FEEDBACK_HTML = `<!DOCTYPE html>
   notifyModeEl.addEventListener('change', () => {
     localStorage.setItem(STORAGE_NOTIFY_MODE, notifyModeEl.value || 'focused');
   });
+
+  function updateHistoryCollapseUi() {
+    historyScrollEl.classList.toggle('collapsed', historyCollapsed);
+    historyToggleEl.textContent = historyCollapsed ? 'Expand' : 'Collapse';
+  }
+
+  function isHistoryNearBottom() {
+    return (historyScrollEl.scrollHeight - historyScrollEl.scrollTop - historyScrollEl.clientHeight) < 32;
+  }
+
+  function scrollHistoryToBottom() {
+    historyScrollEl.scrollTop = historyScrollEl.scrollHeight;
+  }
+
+  function updateHistoryJumpVisibility() {
+    const hidden = historyCollapsed || isHistoryNearBottom();
+    historyJumpEl.classList.toggle('hidden', hidden);
+  }
+
+  historyToggleEl.addEventListener('click', () => {
+    historyCollapsed = !historyCollapsed;
+    localStorage.setItem(STORAGE_HISTORY_COLLAPSED, historyCollapsed ? '1' : '0');
+    updateHistoryCollapseUi();
+    updateHistoryJumpVisibility();
+  });
+
+  historyJumpEl.addEventListener('click', () => {
+    scrollHistoryToBottom();
+    updateHistoryJumpVisibility();
+  });
+
+  historyScrollEl.addEventListener('scroll', () => {
+    updateHistoryJumpVisibility();
+  });
+
+  updateHistoryCollapseUi();
+  updateHistoryJumpVisibility();
 
   function getAudioContext() {
     if (audioContext) return audioContext;
@@ -296,8 +366,7 @@ export const FEEDBACK_HTML = `<!DOCTYPE html>
       if (res.ok) {
         showStatus('Feedback sent!', 'success');
         textbox.value = '';
-        loadCurrent();
-        loadSessions();
+        connectEvents();
       } else {
         showStatus('Failed to send: ' + (await res.text()), 'error');
       }
@@ -315,8 +384,7 @@ export const FEEDBACK_HTML = `<!DOCTYPE html>
         body: JSON.stringify({ content: '', sessionId: explicitSessionId || undefined })
       });
       showStatus('Feedback draft cleared', 'success');
-      loadCurrent();
-      loadSessions();
+      connectEvents();
     } catch (err) {
       showStatus('Error: ' + err.message, 'error');
     }
@@ -459,8 +527,8 @@ export const FEEDBACK_HTML = `<!DOCTYPE html>
       selectedSessionId = sessionId;
       notifiedSessions.delete(sessionId);
       updateUrlSession(sessionId);
+      connectEvents();
       showStatus('Default session updated', 'success');
-      loadSessions();
     } catch (err) {
       showStatus('Error: ' + err.message, 'error');
     }
@@ -480,7 +548,7 @@ export const FEEDBACK_HTML = `<!DOCTYPE html>
         activeSessionInputEl.value = '';
         updateUrlSession('');
       }
-      loadSessions();
+      connectEvents();
     } catch (err) {
       showStatus('Error: ' + err.message, 'error');
     }
@@ -509,7 +577,7 @@ export const FEEDBACK_HTML = `<!DOCTYPE html>
       } else {
         showStatus('Session alias cleared', 'success');
       }
-      loadSessions();
+      connectEvents();
     } catch (err) {
       showStatus('Error: ' + err.message, 'error');
     }
@@ -520,8 +588,8 @@ export const FEEDBACK_HTML = `<!DOCTYPE html>
     activeSessionInputEl.value = sessionId;
     notifiedSessions.delete(sessionId);
     updateUrlSession(sessionId);
+    connectEvents();
     showStatus('Routing feedback to selected session', 'success');
-    loadSessions();
   }
 
   function setActiveFromInput() {
@@ -580,18 +648,177 @@ export const FEEDBACK_HTML = `<!DOCTYPE html>
     setTimeout(() => { statusEl.className = 'status'; }, 3000);
   }
 
-  async function loadCurrent() {
-    try {
-      const suffix = selectedSessionId ? ('?sessionId=' + encodeURIComponent(selectedSessionId)) : '';
-      const res = await fetch('/feedback' + suffix);
-      currentEl.textContent = (await res.text()) || '(empty)';
-    } catch { currentEl.textContent = '(error loading)'; }
+  function formatHistoryTimestamp(value) {
+    if (!value) return 'Unknown time';
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return 'Unknown time';
+    const now = new Date();
+    const sameDay = date.toDateString() === now.toDateString();
+    return sameDay
+      ? date.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })
+      : date.toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
   }
 
-  loadCurrent();
+  function renderHistory(history) {
+    const entries = Array.isArray(history) ? history : [];
+    const shouldAutoScroll = !historyCollapsed && (lastRenderedHistorySignature === '' || isHistoryNearBottom());
+    lastRenderedHistorySignature = JSON.stringify(entries.map((entry) => [entry?.createdAt || '', entry?.content || '']));
+    historySummaryEl.textContent = entries.length === 0
+      ? 'No messages yet'
+      : (entries.length === 1 ? '1 message' : (entries.length + ' messages'));
+
+    if (entries.length === 0) {
+      historyListEl.innerHTML = '<div class="history-item"><div class="history-content">No submitted feedback yet for this session.</div></div>';
+      updateHistoryJumpVisibility();
+      return;
+    }
+
+    historyListEl.innerHTML = entries.slice().reverse().map((entry) => {
+      const createdAt = entry && typeof entry.createdAt === 'string' ? entry.createdAt : '';
+      const content = entry && typeof entry.content === 'string' ? entry.content : '';
+      const label = formatHistoryTimestamp(createdAt);
+      return '<div class="history-item">'
+        + '<div class="history-meta">You • ' + escapeHtml(label) + '</div>'
+        + '<div class="history-content">' + escapeHtml(content) + '</div>'
+        + '</div>';
+    }).join('');
+
+    if (shouldAutoScroll) {
+      requestAnimationFrame(() => {
+        scrollHistoryToBottom();
+        updateHistoryJumpVisibility();
+      });
+      return;
+    }
+
+    updateHistoryJumpVisibility();
+  }
+
+  function applyUiState(payload) {
+    if (!payload || typeof payload !== 'object') return;
+    const sessions = Array.isArray(payload.sessions) ? payload.sessions : [];
+    const active = payload.activeUiSessionId || '(none)';
+
+    if (selectedSessionId && !sessions.some((s) => s.sessionId === selectedSessionId)) {
+      selectedSessionId = (active && active !== '(none)') ? active : '';
+    }
+    if (!selectedSessionId) {
+      selectedSessionId = payload.sessionId || active || '';
+    }
+
+    activeSessionInputEl.value = selectedSessionId;
+    const history = Array.isArray(payload.history) ? payload.history : [];
+    renderHistory(history);
+
+    const routeHint = selectedSessionId ? (' | Route: ' + selectedSessionId) : '';
+    sessionMetaEl.textContent = 'Default (fallback): ' + active + routeHint + ' | Total sessions: ' + sessions.length;
+
+    const targetSessionId = selectedSessionId || active;
+    const waitingSessions = sessions.filter((s) => Boolean(s.waitingForFeedback));
+    for (const s of sessions) {
+      const wasWaiting = Boolean(previousWaitBySession.get(s.sessionId));
+      const isWaitingNow = Boolean(s.waitingForFeedback);
+      if (!wasWaiting && isWaitingNow) {
+        const mode = notifyModeEl.value || 'focused';
+        const shouldNotify = mode === 'all' || s.sessionId === targetSessionId;
+        if (shouldNotify) {
+          notifyWaitingTransition(s.sessionId);
+          notifiedSessions.add(s.sessionId);
+        }
+      }
+      previousWaitBySession.set(s.sessionId, isWaitingNow);
+    }
+    for (const prevId of Array.from(previousWaitBySession.keys())) {
+      if (!sessions.some((s) => s.sessionId === prevId)) {
+        previousWaitBySession.delete(prevId);
+        notifiedSessions.delete(prevId);
+      }
+    }
+
+    const targetSession = sessions.find((s) => s.sessionId === targetSessionId);
+    const targetWaiting = Boolean(targetSession && targetSession.waitingForFeedback);
+    const anyWaiting = waitingSessions.length > 0;
+    const firstWaitingSessionId = waitingSessions[0]?.sessionId || '(none)';
+    if (targetWaiting) {
+      waitBannerEl.className = 'wait-banner waiting';
+      waitBannerEl.textContent = 'Agent is waiting for feedback on session: ' + targetSessionId;
+      textbox.classList.add('waiting');
+      document.title = 'TaskSync - Agent Waiting';
+      const signature = targetSessionId + ':waiting';
+      if (lastWaitSignature !== signature) {
+        notifyWaitingTransition(targetSessionId);
+        lastWaitSignature = signature;
+      }
+    } else if (anyWaiting) {
+      waitBannerEl.className = 'wait-banner waiting';
+      waitBannerEl.textContent = 'A different session is waiting for feedback: ' + firstWaitingSessionId + '. Use Route Here to focus it.';
+      textbox.classList.remove('waiting');
+      document.title = 'TaskSync - Session Waiting';
+    } else {
+      waitBannerEl.className = 'wait-banner idle';
+      waitBannerEl.textContent = 'No session is currently blocked on get_feedback.';
+      textbox.classList.remove('waiting');
+      document.title = 'TaskSync Feedback';
+      lastWaitSignature = 'idle';
+    }
+
+    if (sessions.length === 0) {
+      sessionListEl.innerHTML = '<li class="session-item">No active streamable sessions</li>';
+      return;
+    }
+
+    sessionListEl.innerHTML = sessions.map((s) => {
+      const isActive = s.sessionId === active;
+      const isRoute = s.sessionId === selectedSessionId;
+      const alias = (typeof s.alias === 'string') ? s.alias.trim() : '';
+      const displayName = alias || s.sessionId;
+      if (isRoute) {
+        notifiedSessions.delete(s.sessionId);
+      }
+      const hasAlert = notifiedSessions.has(s.sessionId);
+      const waitingFlag = s.waitingForFeedback
+        ? '<span class="flag flag-waiting">waiting</span>'
+        : '<span class="flag flag-idle">idle</span>';
+      const queueFlag = s.hasQueuedFeedback
+        ? '<span class="flag flag-queue">queued</span>'
+        : '<span class="flag flag-noqueue">no-queue</span>';
+      const routeFlag = isRoute
+        ? '<span class="flag flag-route">route-target</span>'
+        : '';
+      const sessionUrl = s.sessionUrl || ('/session/' + encodeURIComponent(s.sessionId));
+      return '<li class="session-item ' + (isActive ? 'active ' : '') + (hasAlert ? 'alert' : '') + '>'
+        + '<div class="session-name">' + escapeHtml(displayName) + '</div>'
+        + (alias ? ('<div class="session-id">' + escapeHtml(s.sessionId) + '</div>') : '')
+        + '<div class="session-flags">' + waitingFlag + queueFlag + routeFlag + (hasAlert ? ' <span class="session-alert-badge">new wait</span>' : '') + '</div>'
+        + '<a class="session-link" href="' + sessionUrl + '" target="_blank" rel="noopener">Open this session in new window</a>'
+        + '<div class="session-buttons">'
+        + '<button type="button" class="btn-secondary btn-small" data-action="rename" data-session-id="' + escapeHtml(s.sessionId) + '" data-session-alias="' + escapeHtml(alias) + '">Rename</button>'
+        + '<button type="button" class="btn-secondary btn-small" data-action="route" data-session-id="' + escapeHtml(s.sessionId) + '">Route Here</button>'
+        + '<button type="button" class="btn-secondary btn-small" data-action="set-default" data-session-id="' + escapeHtml(s.sessionId) + '">Set Default</button>'
+        + '<button type="button" class="btn-danger btn-small" data-action="disconnect" data-session-id="' + escapeHtml(s.sessionId) + '">Disconnect</button>'
+        + '</div>'
+        + '</li>';
+    }).join('');
+  }
+
+  function connectEvents() {
+    if (uiEventSource) {
+      uiEventSource.close();
+    }
+    const suffix = selectedSessionId ? ('?sessionId=' + encodeURIComponent(selectedSessionId)) : '';
+    uiEventSource = new EventSource('/events' + suffix);
+    uiEventSource.addEventListener('state', (event) => {
+      try {
+        applyUiState(JSON.parse(event.data));
+      } catch {}
+    });
+    uiEventSource.onerror = () => {
+      showStatus('Live updates reconnecting...', 'error');
+    };
+  }
+
   loadSessions();
-  setInterval(loadCurrent, 3000);
-  setInterval(loadSessions, 5000);
+  connectEvents();
 </script>
 </body>
 </html>`;

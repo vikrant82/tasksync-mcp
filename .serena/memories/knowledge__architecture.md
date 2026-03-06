@@ -1,24 +1,26 @@
-# Architecture Notes
-- Entrypoint: `index.ts` -> compiled to `dist/index.js`.
-- Core MCP tools:
-  - `get_feedback`: blocking wait for user feedback; session-scoped in memory.
-- Feedback flow:
-  - UI endpoint `/feedback` accepts content.
-  - Content is stored in-memory per session (non-persistent).
-  - In-memory promise resolver unblocks pending `get_feedback` for the target session.
-- Session model (Streamable HTTP):
-  - Endpoint: `/mcp` (POST/GET/DELETE).
-  - Session transport keyed by MCP `mcp-session-id`.
-  - Session registry map stores per-session transport/server and activity timestamps.
-  - Manual session management endpoints in UI server: `GET /sessions`, `POST /sessions/active`, `DELETE /sessions/:sessionId`, `GET /session/:sessionId`.
-- Logging model:
-  - Structured JSON logs via `logEvent(...)` in `index.ts`.
-  - Verbosity controlled by `TASKSYNC_LOG_LEVEL=debug|info|warn|error`.
-- File/path safety:
-  - Feedback-only runtime does not perform workspace path validation.
-  - Legacy path utility modules remain in repo but are not part of active MCP flow.
-- Modules:
-  - `lib.ts`: path validation and file IO helpers.
-  - `path-utils.ts`, `path-validation.ts`, `roots-utils.ts`: path normalization and root checks.
-  - `feedback-html.ts`: embedded UI template.
-  - `feedback-server.ts`: standalone UI server variant.
+Updated 2026-03-06.
+
+- Runtime is centered in `index.ts` with two Express apps:
+  1. Streamable HTTP MCP server on `/mcp`
+  2. Feedback UI server on `/`, `/session/:sessionId`, `/events`, `/feedback/history`, `/sessions`, and session mutation routes.
+- MCP transport uses `StreamableHTTPServerTransport` with transient in-memory replay support only; replay history is not persisted to disk.
+- Session/UI persistence is handled by `session-state-store.ts`, which stores minimal file-backed metadata in `.tasksync/session-state.json`:
+  - latest/queued feedback
+  - bounded submitted feedback history
+  - session metadata
+  - alias metadata
+  - active UI session
+- `stream-event-store.ts` provides the transient in-memory event store used for short-lived replay while the process remains alive.
+- UI state is pushed via SSE from `/events`; server broadcasts UI state on session and waiter lifecycle transitions.
+- UI target session resolution rule is: requested session if live, else active UI session if live, else first live session, else default session constant.
+- Logging now supports:
+  - compact structured logs via `logEvent(...)`
+  - pretty debug request/response logs for MCP and UI traffic
+  - request IDs and MCP method/result hints in debug mode
+  - optional dual-write file logging via `TASKSYNC_LOG_FILE`
+- Session-close semantics:
+  - stream close clears waiter and logs closure, but does not delete session state
+  - explicit MCP `DELETE /mcp` fully removes session state
+  - UI `DELETE /sessions/:sessionId` also fully removes session state
+  - closing the browser tab does not delete MCP sessions
+- Current architectural follow-up: `index.ts` now carries substantial responsibilities (MCP lifecycle, UI routes, SSE state push, logging, persistence wiring) and could be split into smaller modules later.

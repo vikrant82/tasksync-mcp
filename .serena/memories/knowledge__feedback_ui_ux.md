@@ -1,30 +1,18 @@
-# Feedback UI/UX Behavior (2026-03-05)
+Updated 2026-03-06.
 
-- Session controls:
-  - `Route Here`: sets the current browser tab's route-target session (where sends/polls are focused).
-  - `Set Default`: updates server-side default fallback session (`POST /sessions/default`, `/sessions/active` kept as alias).
-- Session status chips:
-  - `waiting`: this session is blocked on `get_feedback` now.
-  - `idle`: not currently waiting.
-  - `queued`: session has queued feedback waiting to be consumed.
-  - `no-queue`: no queued feedback currently stored.
-  - `route-target`: this tab is currently routing feedback to this session.
-- Waiting banners:
-  - If route-target is waiting, show direct waiting banner and highlight textarea.
-  - If another session is waiting, show cross-session waiting banner with target session hint.
-- Notification settings:
-  - Sound toggle persisted in `localStorage` key `tasksync.notify.sound`.
-  - Desktop toggle persisted in `localStorage` key `tasksync.notify.desktop`.
-  - Mode selector persisted in `localStorage` key `tasksync.notify.mode` (`focused` or `all`).
-- Notification delivery semantics:
-  - Transition-based alerts: notify when a session changes from not-waiting -> waiting.
-  - `focused` mode: alert only for route-target session.
-  - `all` mode: alert for any session transitioning to waiting.
-  - Per-session `new wait` badge marks sessions that triggered a notification and clears when that session becomes route-target.
-- Browser constraints and mitigations:
-  - Audio requires user gesture unlock in modern browsers.
-  - UI now primes alerts on `pointerdown`/`keydown`/`touchstart` and reuses one AudioContext.
-  - Desktop notifications require Notification permission (`granted`).
-- Data consistency safeguards:
-  - Stale route session IDs are auto-fallbacked to server default (or empty).
-  - `GET /feedback` is read-only and does not create ghost session state.
+Current feedback UI behavior:
+- Wide-screen two-column layout.
+- Left column: feedback composer and conversation history.
+- Right column: sessions and settings.
+- Old help panel removed.
+- Old standalone 'Current session feedback' panel removed.
+- History is bounded, collapsible, and scrollable.
+- History includes compact timestamps, smart auto-scroll near bottom, and a 'Jump to latest' button when scrolled up.
+- Live UI updates use EventSource `/events` rather than polling.
+- Session route targeting is resolved against live sessions to avoid stale/dead session routing.
+- Manual refresh for sessions still exists, but main live state comes from SSE.
+
+Backend expectations for UI:
+- `/events` emits full state payloads.
+- `/feedback/history` returns bounded submitted feedback history for the selected session.
+- `/feedback` remains POST-only for feedback submission.

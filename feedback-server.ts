@@ -20,23 +20,21 @@ app.use(express.json());
 
 let currentFeedback = "";
 let standaloneAlias = "";
+let feedbackHistory: { role: "user"; content: string; createdAt: string }[] = [];
+const sseClients = new Set<express.Response>();
 
-app.get("/", (_req, res) => {
-  res.type("html").send(
-    FEEDBACK_HTML
-      .replace("FEEDBACK_PATH", "in-memory feedback queue (non-persistent)")
-      .replace("ACTIVE_SESSION_INFO", `Active session: ${standaloneAlias || "standalone"} | Known sessions: 1`)
-  );
-});
+function renderStandaloneHtml() {
+  return FEEDBACK_HTML
+    .replace("FEEDBACK_PATH", "standalone feedback UI with local session state")
+    .replace("ACTIVE_SESSION_INFO", `Active session: ${standaloneAlias || "standalone"} | Known sessions: 1`);
+}
 
-app.get("/feedback", (_req, res) => {
-  res.type("text").send(currentFeedback);
-});
-
-app.get("/sessions", (_req, res) => {
-  res.json({
-    defaultUiSessionId: "standalone",
+function buildStandalonePayload() {
+  return {
     activeUiSessionId: "standalone",
+    sessionId: "standalone",
+    latestFeedback: currentFeedback,
+    history: feedbackHistory,
     sessions: [
       {
         sessionId: "standalone",
@@ -48,15 +46,47 @@ app.get("/sessions", (_req, res) => {
         hasQueuedFeedback: false,
       },
     ],
+  };
+}
+
+function broadcastStandaloneState() {
+  const payload = JSON.stringify(buildStandalonePayload());
+  for (const client of sseClients) {
+    client.write(`event: state\ndata: ${payload}\n\n`);
+  }
+}
+
+app.get("/", (_req, res) => {
+  res.type("html").send(renderStandaloneHtml());
+});
+
+app.get("/feedback/history", (_req, res) => {
+  res.json({ sessionId: "standalone", history: feedbackHistory });
+});
+
+app.get("/events", (req, res) => {
+  res.setHeader("Content-Type", "text/event-stream");
+  res.setHeader("Cache-Control", "no-cache, no-transform");
+  res.setHeader("Connection", "keep-alive");
+  res.flushHeaders?.();
+  sseClients.add(res);
+  res.write(`event: state\ndata: ${JSON.stringify(buildStandalonePayload())}\n\n`);
+  req.on("close", () => {
+    sseClients.delete(res);
+  });
+});
+
+app.get("/sessions", (_req, res) => {
+  const payload = buildStandalonePayload();
+  res.json({
+    defaultUiSessionId: "standalone",
+    activeUiSessionId: "standalone",
+    sessions: payload.sessions,
   });
 });
 
 app.get("/session/:sessionId", (_req, res) => {
-  res.type("html").send(
-    FEEDBACK_HTML
-      .replace("FEEDBACK_PATH", "in-memory feedback queue (non-persistent)")
-      .replace("ACTIVE_SESSION_INFO", `Active session: ${standaloneAlias || "standalone"} | Known sessions: 1`)
-  );
+  res.type("html").send(renderStandaloneHtml());
 });
 
 const setDefaultSessionHandler = (_req: express.Request, res: express.Response) => {
@@ -73,6 +103,7 @@ app.post("/sessions/:sessionId/alias", (req, res) => {
   }
 
   standaloneAlias = typeof req.body?.alias === "string" ? req.body.alias.trim().slice(0, 80) : "";
+  broadcastStandaloneState();
   res.json({ ok: true, sessionId: "standalone", alias: standaloneAlias });
 });
 
@@ -83,6 +114,13 @@ app.delete("/sessions/:sessionId", (_req, res) => {
 app.post("/feedback", async (req, res) => {
   try {
     currentFeedback = typeof req.body === "string" ? req.body : req.body.content ?? "";
+    if (currentFeedback.trim()) {
+      feedbackHistory = [
+        ...feedbackHistory,
+        { role: "user" as const, content: currentFeedback, createdAt: new Date().toISOString() },
+      ].slice(-50);
+    }
+    broadcastStandaloneState();
     res.json({ ok: true });
   } catch (err) {
     res.status(500).json({ error: String(err) });

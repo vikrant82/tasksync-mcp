@@ -52,6 +52,12 @@ curl -s -X POST "$UI_BASE/feedback" \
   -d "{\"content\":\"Feedback for session B\",\"sessionId\":\"$SESSION_B\"}" | jq .
 ```
 
+## 5b) Inspect feedback history for session A
+
+```bash
+curl -s "$UI_BASE/feedback/history?sessionId=$SESSION_A" | jq .
+```
+
 ## 6) (Optional) Send MCP request on a specific session
 
 ```bash

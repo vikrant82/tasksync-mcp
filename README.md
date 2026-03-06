@@ -3,7 +3,7 @@
 TaskSync is an MCP server focused on iterative human feedback loops for coding agents.
 
 It provides:
-- `get_feedback`: session-scoped blocking feedback queue (in-memory, non-persistent)
+- `get_feedback`: session-scoped blocking feedback wait with minimal persisted feedback/session metadata
 
 ## Transport Model
 
@@ -13,7 +13,7 @@ TaskSync now runs as **Streamable HTTP MCP only**.
 - Health endpoint: `http://localhost:3011/health`
 - Feedback UI: `http://localhost:3456`
 
-No `stdio` transport, no SSE transport, and no file-based feedback watcher/persistence path.
+No `stdio` transport and no legacy file-watcher feedback path. TaskSync persists minimal session/feedback metadata locally.
 
 ## Quick Start
 
@@ -68,6 +68,13 @@ Optional auth headers:
 - `--ui-port=<n>`: feedback UI port (default `3456`)
 - `--timeout=<ms>`: `get_feedback` wait timeout (`0` means block indefinitely)
 - `--no-ui`: disable embedded feedback UI
+
+## Persistence and Reconnect Behavior
+
+- Feedback/session metadata is persisted locally under `.tasksync/session-state.json`.
+- The session file stores minimal state only: latest/queued feedback, session metadata, aliases, and active UI session.
+- Temporary stream drops may still recover through normal in-memory Streamable HTTP replay while the server process remains alive.
+- Stale pre-restart `mcp-session-id` values are still invalid; restart continuity comes from a fresh initialize plus preserved feedback/session reassociation.
 
 ## Logging
 

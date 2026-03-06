@@ -5,7 +5,7 @@
 - Server name: `tasksync-server`
 - Version: `1.0.0`
 - Transport: Streamable HTTP MCP
-- Feedback storage: in-memory, session-scoped, non-persistent
+- Feedback storage: session-scoped, file-backed minimal metadata
 
 ## MCP Tools
 
@@ -18,9 +18,6 @@ Behavior:
 - Otherwise blocks until new feedback arrives (or timeout if configured).
 - Timeout mode (`--timeout>0`) returns:
   - `[WAITING] No new feedback yet. Call get_feedback again to continue waiting.`
-- Optional legacy args `path`, `head`, `tail` are accepted for compatibility.
-  - `path` is ignored.
-  - `head`/`tail` trim returned text lines.
 
 ## MCP HTTP Endpoints
 
@@ -33,12 +30,14 @@ Session semantics:
 - Client initializes without `mcp-session-id`.
 - Server issues and tracks session id.
 - Client sends `mcp-session-id` on subsequent requests.
+- Temporary stream reconnects can recover while the server process remains alive.
+- Stale session IDs from before a server restart are still rejected; continuity is provided via fresh initialize plus reassociated persisted state.
 
 ## Feedback UI Endpoints
 
 - `GET /`
 - `GET /session/:sessionId`
-- `GET /feedback?sessionId=<id>`
+- `GET /feedback/history?sessionId=<id>`
 - `POST /feedback` body: `{ "content": string, "sessionId"?: string }`
 - `GET /sessions`
 - `POST /sessions/default` body: `{ "sessionId": string }`
@@ -51,9 +50,24 @@ Session semantics:
 - `alias`: optional display label (manual alias or inferred initialize metadata)
 - `sessionUrl`, `createdAt`, `lastActivityAt`, `waitingForFeedback`, `hasQueuedFeedback`
 
+`GET /feedback/history` returns:
+- `sessionId`: normalized session ID used for the lookup
+- `history`: array of submitted user feedback entries `{ role, content, createdAt }`
+
 ## CLI Flags
 
 - `--port=<port>`: MCP Streamable HTTP port (default `3011`)
 - `--ui-port=<port>`: feedback UI port (default `3456`)
 - `--timeout=<ms>`: feedback wait timeout (`0` blocks forever)
 - `--no-ui`: disable feedback UI
+
+## Persistence Notes
+
+- Local persisted state path: `.tasksync/session-state.json`
+- Persisted state includes queued/latest feedback, bounded submitted feedback history, session metadata, alias metadata, and active UI session.
+- Live transport objects, MCP server instances, waiter resolver closures, and replay-event history are not persisted to the session file.
+
+## Feedback UI Notes
+
+- On wide screens, the UI shows feedback composer/history on the left and sessions/settings in a right sidebar.
+- The current session view includes latest feedback text plus submitted feedback history for that session.

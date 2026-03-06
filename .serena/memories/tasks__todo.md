@@ -1,0 +1,5 @@
+- Investigate the long-idle disconnect bug: old session waiter was resolved server-side after ~71 minutes, but the agent did not receive it and manually initialized a new session.
+- Compare old session `30ea4c58-f709-45fc-9925-f72eefec8e56` and new session `2b5450ac-aa6b-427d-9844-970e3038b6b5` in `tasksync.log` and confirm why no `mcp.session.stream.closed` / `feedback.waiter.cleared` / `mcp.session.closed` occurred for the old session.
+- Audit whether long-lived `POST /mcp` waits need explicit request/response close/aborted hooks beyond transport `onclose`.
+- Optionally verify `TASKSYNC_LOG_FILE` behavior and SSE UI behavior under real use.
+- Review final git diff and continue from the same disconnection issue next session.
