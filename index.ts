@@ -29,14 +29,22 @@ const logLevel = (process.env.TASKSYNC_LOG_LEVEL || "info").toLowerCase();
 const DEFAULT_FEEDBACK_SESSION = "__default__";
 
 type FeedbackChannelState = {
-  pendingFeedbackResolve: ((content: string) => void) | null;
+  pendingWaiter: {
+    waitId: string;
+    startedAt: string;
+    resolve: (content: string) => void;
+  } | null;
   queuedFeedback: string | null;
+  queuedAt: string | null;
   latestFeedback: string;
 };
 
 type StreamableSessionEntry = {
   transport: StreamableHTTPServerTransport;
   server: Server;
+  transportId: string;
+  clientAlias: string;
+  clientGeneration: number | null;
   createdAt: string;
   lastActivityAt: string;
 };
@@ -45,6 +53,7 @@ const feedbackStateBySession = new Map<string, FeedbackChannelState>();
 const streamableSessions = new Map<string, StreamableSessionEntry>();
 const manualAliasBySession = new Map<string, string>();
 const inferredAliasBySession = new Map<string, string>();
+const clientGenerationByAlias = new Map<string, number>();
 let activeUiSessionId = DEFAULT_FEEDBACK_SESSION;
 
 type LogLevel = "debug" | "info" | "warn" | "error";
@@ -94,13 +103,20 @@ function getFeedbackState(sessionId: string): FeedbackChannelState {
   if (existing) return existing;
 
   const created: FeedbackChannelState = {
-    pendingFeedbackResolve: null,
+    pendingWaiter: null,
     queuedFeedback: null,
+    queuedAt: null,
     latestFeedback: "",
   };
   feedbackStateBySession.set(sessionId, created);
   logEvent("debug", "feedback.state.created", { sessionId });
   return created;
+}
+
+function nextClientGeneration(alias: string): number {
+  const nextGeneration = (clientGenerationByAlias.get(alias) ?? 0) + 1;
+  clientGenerationByAlias.set(alias, nextGeneration);
+  return nextGeneration;
 }
 
 function formatResponseWithHeadTail(content: string, head?: number, tail?: number): { content: { type: "text"; text: string }[] } {
@@ -138,24 +154,52 @@ function inferAliasFromInitializeBody(body: unknown): string {
 function resolvePendingFeedback(content: string, rawSessionId?: string): boolean {
   const sessionId = getSessionId(rawSessionId);
   const state = getFeedbackState(sessionId);
+  const queuedAt = new Date().toISOString();
   state.latestFeedback = content;
   logEvent("debug", "feedback.received", {
     sessionId,
     contentLength: content.length,
-    hasPendingWaiter: Boolean(state.pendingFeedbackResolve),
+    hasPendingWaiter: Boolean(state.pendingWaiter),
+    pendingWaitId: state.pendingWaiter?.waitId,
   });
 
-  if (state.pendingFeedbackResolve) {
-    const resolve = state.pendingFeedbackResolve;
-    state.pendingFeedbackResolve = null;
-    resolve(content);
-    logEvent("info", "feedback.delivered.to_waiter", { sessionId, contentLength: content.length });
+  if (state.pendingWaiter) {
+    const waiter = state.pendingWaiter;
+    state.pendingWaiter = null;
+    state.queuedAt = null;
+    waiter.resolve(content);
+    logEvent("info", "feedback.delivered.to_waiter", {
+      sessionId,
+      waitId: waiter.waitId,
+      waitStartedAt: waiter.startedAt,
+      waitDurationMs: Date.now() - Date.parse(waiter.startedAt),
+      contentLength: content.length,
+    });
     return true;
   }
 
   state.queuedFeedback = content;
-  logEvent("info", "feedback.queued", { sessionId, contentLength: content.length });
+  state.queuedAt = queuedAt;
+  logEvent("info", "feedback.queued", {
+    sessionId,
+    queuedAt,
+    contentLength: content.length,
+  });
   return false;
+}
+
+function clearPendingWaiter(sessionId: string, reason: string) {
+  const state = feedbackStateBySession.get(sessionId);
+  if (!state || !state.pendingWaiter) return;
+  const waiter = state.pendingWaiter;
+  state.pendingWaiter = null;
+  logEvent("warn", "feedback.waiter.cleared", {
+    sessionId,
+    reason,
+    waitId: waiter.waitId,
+    waitStartedAt: waiter.startedAt,
+    waitDurationMs: Date.now() - Date.parse(waiter.startedAt),
+  });
 }
 
 function registerServerHandlers(targetServer: Server) {
@@ -190,16 +234,31 @@ function registerServerHandlers(targetServer: Server) {
 
           if (feedbackState.queuedFeedback !== null) {
             const content = feedbackState.queuedFeedback;
+            const queuedAt = feedbackState.queuedAt;
             feedbackState.queuedFeedback = null;
-            logEvent("info", "feedback.return.queued", { sessionId, contentLength: content.length });
+            feedbackState.queuedAt = null;
+            logEvent("info", "feedback.return.queued", {
+              sessionId,
+              queuedAt,
+              queuedDurationMs: queuedAt ? Date.now() - Date.parse(queuedAt) : undefined,
+              contentLength: content.length,
+            });
             return formatResponseWithHeadTail(content, parsed.data.head, parsed.data.tail);
           }
 
+          const waitId = randomUUID();
+          const waitStartedAt = new Date().toISOString();
           const feedbackPromise = new Promise<string>((resolve) => {
-            feedbackState.pendingFeedbackResolve = resolve;
+            feedbackState.pendingWaiter = {
+              waitId,
+              startedAt: waitStartedAt,
+              resolve,
+            };
           });
           logEvent("info", "feedback.waiting", {
             sessionId,
+            waitId,
+            waitStartedAt,
             timeoutMs: feedbackTimeout,
           });
 
@@ -214,14 +273,29 @@ function registerServerHandlers(targetServer: Server) {
           }
 
           if (result === null) {
-            feedbackState.pendingFeedbackResolve = null;
-            logEvent("info", "feedback.wait.timeout", { sessionId, timeoutMs: feedbackTimeout });
+            const timedOutWaiter = feedbackState.pendingWaiter;
+            if (timedOutWaiter?.waitId === waitId) {
+              feedbackState.pendingWaiter = null;
+            }
+            logEvent("info", "feedback.wait.timeout", {
+              sessionId,
+              waitId,
+              waitStartedAt,
+              waitDurationMs: Date.now() - Date.parse(waitStartedAt),
+              timeoutMs: feedbackTimeout,
+            });
             return {
               content: [{ type: "text", text: "[WAITING] No new feedback yet. Call get_feedback again to continue waiting." }],
             };
           }
 
-          logEvent("info", "feedback.return.live", { sessionId, contentLength: result.length });
+          logEvent("info", "feedback.return.live", {
+            sessionId,
+            waitId,
+            waitStartedAt,
+            waitDurationMs: Date.now() - Date.parse(waitStartedAt),
+            contentLength: result.length,
+          });
           return formatResponseWithHeadTail(result, parsed.data.head, parsed.data.tail);
         }
 
@@ -292,7 +366,7 @@ function startFeedbackUI() {
         sessionUrl: `${uiBaseUrl}/session/${encodeURIComponent(sessionId)}`,
         createdAt: entry.createdAt,
         lastActivityAt: entry.lastActivityAt,
-        waitingForFeedback: Boolean(state.pendingFeedbackResolve),
+        waitingForFeedback: Boolean(state.pendingWaiter),
         hasQueuedFeedback: Boolean(state.queuedFeedback),
       };
     });
@@ -476,7 +550,13 @@ async function runStreamableHTTPServer() {
           return;
         }
         entry.lastActivityAt = new Date().toISOString();
-        logEvent("debug", "mcp.session.reused", { sessionId, method: req.method });
+        logEvent("debug", "mcp.session.reused", {
+          sessionId,
+          method: req.method,
+          transportId: entry.transportId,
+          clientAlias: entry.clientAlias || undefined,
+          clientGeneration: entry.clientGeneration ?? undefined,
+        });
       } else {
         if (req.method !== "POST" || !isInitializeRequest(req.body)) {
           logEvent("warn", "mcp.session.missing", { method: req.method });
@@ -490,6 +570,9 @@ async function runStreamableHTTPServer() {
 
         const sessionServer = createSessionServer();
         const inferredAlias = inferAliasFromInitializeBody(req.body);
+        const clientAlias = inferredAlias || "unknown-client";
+        const clientGeneration = nextClientGeneration(clientAlias);
+        const transportId = randomUUID();
         let createdTransport: StreamableHTTPServerTransport;
         createdTransport = new StreamableHTTPServerTransport({
           sessionIdGenerator: () => randomUUID(),
@@ -500,11 +583,17 @@ async function runStreamableHTTPServer() {
             streamableSessions.set(initializedSessionId, {
               transport: createdTransport,
               server: sessionServer,
+              transportId,
+              clientAlias,
+              clientGeneration,
               createdAt: new Date().toISOString(),
               lastActivityAt: new Date().toISOString(),
             });
             logEvent("info", "mcp.session.created", {
               sessionId: initializedSessionId,
+              transportId,
+              clientAlias,
+              clientGeneration,
               inferredAlias: inferredAlias || undefined,
               activeSessions: streamableSessions.size,
             });
@@ -514,10 +603,15 @@ async function runStreamableHTTPServer() {
         createdTransport.onclose = () => {
           const closedSessionId = createdTransport.sessionId;
           if (!closedSessionId) return;
+          clearPendingWaiter(closedSessionId, "stream_closed");
+          const closedEntry = streamableSessions.get(closedSessionId);
           // Stream closures can be transient (for example SSE reconnects).
           // Keep session state unless an explicit DELETE/session disconnect occurs.
           logEvent("warn", "mcp.session.stream.closed", {
             sessionId: closedSessionId,
+            transportId: closedEntry?.transportId ?? transportId,
+            clientAlias: closedEntry?.clientAlias || clientAlias,
+            clientGeneration: closedEntry?.clientGeneration ?? clientGeneration,
             activeSessions: streamableSessions.size,
           });
         };
@@ -526,14 +620,22 @@ async function runStreamableHTTPServer() {
         entry = {
           transport: createdTransport,
           server: sessionServer,
+          transportId,
+          clientAlias,
+          clientGeneration,
           createdAt: new Date().toISOString(),
           lastActivityAt: new Date().toISOString(),
         };
       }
 
+      if (!entry) {
+        throw new Error("No session entry available to handle MCP request");
+      }
+
       await entry.transport.handleRequest(req, res, req.body);
 
       if (req.method === "DELETE" && sessionId) {
+        clearPendingWaiter(sessionId, "explicit_delete");
         streamableSessions.delete(sessionId);
         feedbackStateBySession.delete(sessionId);
         manualAliasBySession.delete(sessionId);
@@ -543,6 +645,9 @@ async function runStreamableHTTPServer() {
         }
         logEvent("info", "mcp.session.closed", {
           sessionId,
+          transportId: entry.transportId,
+          clientAlias: entry.clientAlias || undefined,
+          clientGeneration: entry.clientGeneration ?? undefined,
           activeSessions: streamableSessions.size,
           reason: "explicit_delete",
         });
