@@ -52,10 +52,9 @@ Every turn follows this sequence:
 
 ### `[WAITING]` Responses
 
-- `[WAITING]` means no human feedback is available yet; it is a heartbeat/keepalive response.
-- Do **not** summarize it back as if it were user feedback.
-- Do **not** stop, pause, or change goals because of it.
-- Simply continue waiting by calling `get_feedback` again.
+- `[WAITING]` is only a heartbeat.
+- Emit no assistant message.
+- Immediately call `get_feedback` again.
 
 ---
 
