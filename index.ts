@@ -589,6 +589,31 @@ async function runStreamableHTTPServer() {
               createdAt: new Date().toISOString(),
               lastActivityAt: new Date().toISOString(),
             });
+            // If this client alias had queued feedback on a previous session, migrate it
+            try {
+              const destState = getFeedbackState(initializedSessionId);
+              for (const [otherId, otherEntry] of streamableSessions.entries()) {
+                if (otherId === initializedSessionId) continue;
+                if (otherEntry.clientAlias === clientAlias) {
+                  const srcState = getFeedbackState(otherId);
+                  if (srcState.queuedFeedback && !destState.queuedFeedback) {
+                    destState.queuedFeedback = srcState.queuedFeedback;
+                    destState.queuedAt = srcState.queuedAt;
+                    srcState.queuedFeedback = null;
+                    srcState.queuedAt = null;
+                    logEvent("info", "feedback.migrated", {
+                      fromSessionId: otherId,
+                      toSessionId: initializedSessionId,
+                      queuedAt: destState.queuedAt,
+                      contentLength: destState.queuedFeedback.length,
+                    });
+                    break;
+                  }
+                }
+              }
+            } catch (e) {
+              logEvent("warn", "feedback.migration.failed", { error: String(e), sessionId: initializedSessionId });
+            }
             logEvent("info", "mcp.session.created", {
               sessionId: initializedSessionId,
               transportId,
