@@ -23,4 +23,5 @@ Updated 2026-03-06.
   - explicit MCP `DELETE /mcp` fully removes session state
   - UI `DELETE /sessions/:sessionId` also fully removes session state
   - closing the browser tab does not delete MCP sessions
+- 2026-03-06 update: `get_feedback` waiter ownership is tracked per raw HTTP request via request-scoped IDs. `index.ts` attaches request abort/response close cleanup so abandoned long-lived POST waits clear only their own waiter and later feedback is queued instead of being delivered into a stale waiter.
 - Current architectural follow-up: `index.ts` now carries substantial responsibilities (MCP lifecycle, UI routes, SSE state push, logging, persistence wiring) and could be split into smaller modules later.
