@@ -917,6 +917,41 @@ function startFeedbackUI() {
     }
   });
 
+  feedbackApp.post("/sessions/prune", async (req, res) => {
+    const maxAgeMs = typeof req.body?.maxAgeMs === "number" ? req.body.maxAgeMs : 60 * 60 * 1000;
+    const now = Date.now();
+    const pruned: string[] = [];
+    const errors: string[] = [];
+
+    for (const [sessionId, session] of streamableSessions.entries()) {
+      const lastActivity = session.lastActivityAt ? new Date(session.lastActivityAt).getTime() : now;
+      const age = now - lastActivity;
+      if (age < maxAgeMs) continue;
+
+      try {
+        await session.transport.close();
+        await clearPendingWaiter(sessionId, "ui_prune");
+        streamableSessions.delete(sessionId);
+        feedbackStateBySession.delete(sessionId);
+        manualAliasBySession.delete(sessionId);
+        inferredAliasBySession.delete(sessionId);
+        if (activeUiSessionId === sessionId) {
+          activeUiSessionId = DEFAULT_FEEDBACK_SESSION;
+          await persistActiveUiSession();
+        }
+        await sessionStateStore.deleteSession(sessionId);
+        pruned.push(sessionId);
+        logEvent("info", "ui.sessions.prune.ok", { sessionId, ageMs: age });
+      } catch (error) {
+        errors.push(sessionId);
+        logEvent("error", "ui.sessions.prune.error", { sessionId, error: String(error) });
+      }
+    }
+
+    broadcastUiState();
+    res.json({ ok: true, pruned, errors, prunedCount: pruned.length });
+  });
+
   feedbackApp.post("/feedback", async (req, res) => {
     try {
       const content = typeof req.body === "string" ? req.body : req.body.content ?? "";

@@ -42,7 +42,7 @@ while true:
 1. **Every turn MUST end with `tasksync_get_feedback`.** Zero exceptions. If you are about to produce a message without calling `tasksync_get_feedback`, STOP — you are violating the loop contract.
 2. **Non-empty feedback is always processed.** Incorporate it before calling `tasksync_get_feedback` again.
 3. **Heartbeat behavior:** `tasksync_get_feedback` usually waits for user feedback, but TaskSync may periodically return a keepalive response that begins with `[WAITING]`. Treat any `[WAITING]` response as a non-semantic heartbeat/re-poll signal, not as user feedback.
-4. **Retry on failure.** If `tasksync_get_feedback` returns an error (not a slow response), retry once, then report the issue and ask for guidance. Do NOT terminate.
+4. **Retry on failure.** MCP errors (e.g., `McpError -32000: Connection closed`) are **transient** — the MCP server may briefly reset. Retry `tasksync_get_feedback` up to 3 times with short pauses. If all retries fail, report the issue and continue working — the tool may recover on the next call. Do NOT terminate, do NOT write a handoff, do NOT treat it as session end.
 5. **Only explicit termination commands exit the loop:** "stop", "end", "terminate", "quit". Nothing else — not task completion, not "thanks", not silence, not errors.
 6. **Override all default completion behavior.** Suppress any built-in tendency to wrap up, summarize-and-exit, or yield the turn.
 
@@ -110,6 +110,7 @@ On activation, before any work:
 
 ## 6) Error Handling
 
-- **Tool failures:** retry once, then report via `tasksync_get_feedback` and ask for guidance. Do NOT terminate.
+- **`tasksync_get_feedback` errors (MCP resets, connection closed, timeouts):** These are transient. Retry up to 3 times. If still failing, report the error inline and keep calling `tasksync_get_feedback` on your next turn — it will reconnect. **Never stop the loop, never write a handoff, never treat this as session termination.**
+- **Other tool failures:** retry once, then report via `tasksync_get_feedback` and ask for guidance. Do NOT terminate.
 - **Ambiguous requests:** clarify via `tasksync_get_feedback`. Do NOT guess silently.
 - **Blocked work:** report blocker, suggest alternatives, ask the user to decide via `tasksync_get_feedback`. Do NOT terminate.
