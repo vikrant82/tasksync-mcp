@@ -5,8 +5,6 @@ export type PersistedFeedbackState = {
   queuedFeedback: string | null;
   queuedAt: string | null;
   latestFeedback: string;
-  wasWaitingForFeedback?: boolean;
-  waitStartedAt?: string | null;
   history: {
     role: "user";
     content: string;

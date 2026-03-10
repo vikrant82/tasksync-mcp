@@ -52,8 +52,6 @@ type FeedbackChannelState = {
   queuedFeedback: string | null;
   queuedAt: string | null;
   latestFeedback: string;
-  wasWaitingForFeedback: boolean;
-  waitStartedAt: string | null;
   history: {
     role: "user";
     content: string;
@@ -283,8 +281,8 @@ function buildUiStatePayload(targetSessionId?: string) {
       sessionUrl: `http://localhost:${uiPort}/session/${encodeURIComponent(sessionId)}`,
       createdAt: entry.createdAt,
       lastActivityAt: entry.lastActivityAt,
-      waitingForFeedback: Boolean(state.pendingWaiter) || state.wasWaitingForFeedback,
-      waitStartedAt: state.pendingWaiter?.startedAt || state.waitStartedAt || null,
+      waitingForFeedback: Boolean(state.pendingWaiter),
+      waitStartedAt: state.pendingWaiter?.startedAt || null,
       hasQueuedFeedback: Boolean(state.queuedFeedback),
     };
   });
@@ -409,8 +407,6 @@ function getFeedbackState(sessionId: string): FeedbackChannelState {
     queuedFeedback: null,
     queuedAt: null,
     latestFeedback: "",
-    wasWaitingForFeedback: false,
-    waitStartedAt: null,
     history: [],
   };
   feedbackStateBySession.set(sessionId, created);
@@ -424,8 +420,6 @@ function toPersistedFeedbackState(sessionId: string) {
     queuedFeedback: state.queuedFeedback,
     queuedAt: state.queuedAt,
     latestFeedback: state.latestFeedback,
-    wasWaitingForFeedback: Boolean(state.pendingWaiter) || state.wasWaitingForFeedback,
-    waitStartedAt: state.pendingWaiter?.startedAt ?? state.waitStartedAt ?? null,
     history: state.history,
   };
 }
@@ -515,8 +509,6 @@ async function hydratePersistedState() {
       queuedFeedback: persistedState.queuedFeedback,
       queuedAt: persistedState.queuedAt,
       latestFeedback: persistedState.latestFeedback,
-      wasWaitingForFeedback: persistedState.wasWaitingForFeedback ?? false,
-      waitStartedAt: persistedState.waitStartedAt ?? null,
       history: Array.isArray(persistedState.history) ? persistedState.history : [],
     });
   }
@@ -597,8 +589,6 @@ async function resolvePendingFeedback(content: string, rawSessionId?: string): P
   if (state.pendingWaiter) {
     const waiter = state.pendingWaiter;
     state.pendingWaiter = null;
-    state.wasWaitingForFeedback = false;
-    state.waitStartedAt = null;
     state.queuedAt = null;
     await persistFeedbackState(sessionId);
     broadcastUiState(sessionId);
@@ -632,8 +622,6 @@ async function clearPendingWaiter(sessionId: string, reason: string, expectedReq
   const waiter = state.pendingWaiter;
   if (expectedRequestId && waiter.requestId !== expectedRequestId) return;
   state.pendingWaiter = null;
-  state.wasWaitingForFeedback = false;
-  state.waitStartedAt = null;
   await persistFeedbackState(sessionId);
   broadcastUiState(sessionId);
   waiter.resolve({ type: "closed", reason });
@@ -739,8 +727,6 @@ function registerServerHandlers(targetServer: Server) {
               requestId,
               resolve,
             };
-            feedbackState.wasWaitingForFeedback = true;
-            feedbackState.waitStartedAt = waitStartedAt;
           });
           await persistFeedbackState(sessionId);
           broadcastUiState(sessionId);
