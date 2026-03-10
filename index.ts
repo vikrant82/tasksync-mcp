@@ -1202,12 +1202,12 @@ async function runStreamableHTTPServer() {
               generation: persistedMeta.clientGeneration,
             });
             // Fall through to session creation below
-          } else if (req.method === "GET" && persistedMeta) {
-            // SSE reconnection for a session pending resurrection.
+          } else if (persistedMeta) {
+            // Non-initialize request (POST message or GET) for a session pending resurrection.
             // Return 503 instead of 404 so the client retries WITHOUT clearing its session ID.
-            // (The MCP SDK clears sessionId on 404, preventing header-based resurrection.)
-            logEvent("info", "mcp.session.sse.pending_resurrection", {
+            logEvent("info", "mcp.session.pending_resurrection", {
               sessionId,
+              method: req.method,
               clientAlias: persistedMeta.clientAlias,
               lastActivityAt: persistedMeta.lastActivityAt,
             });
