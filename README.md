@@ -114,6 +114,8 @@ TaskSync includes agent prompt files for configuring the daemon loop behavior:
 
 - Feedback/session metadata is persisted locally under `.tasksync/session-state.json`.
 - The session file stores minimal state only: latest/queued feedback, session metadata, aliases, and active UI session.
+- Session IDs are human-readable: `{client-slug}-{generation}` (e.g., `opencode-1`, `copilot-3`), derived from the MCP client's name and a monotonic counter.
+- Stale sessions (inactive >4 hours, not currently waiting) are auto-pruned every 5 minutes.
 - Temporary stream drops may still recover through normal in-memory Streamable HTTP replay while the server process remains alive.
 - Stale pre-restart `mcp-session-id` values are still invalid; restart continuity comes from a fresh initialize plus preserved feedback/session reassociation.
 
@@ -127,7 +129,7 @@ Key log events for monitoring keepalive:
 - `feedback.keepalive.started` — keepalive interval activated
 - `feedback.keepalive.sent` — keepalive written (sampled every 10th)
 - `feedback.keepalive.stopped` — interval cleared, with `reason` and `totalSent`
-- `feedback.return.live` — feedback delivered, with `waitDurationMs` and `keepalivesSent`
+- `feedback.delivered.to_waiter` — feedback delivered to waiting agent, with `waitDurationMs`
 
 Session routing note: UI "default session" is the fallback target used only when `POST /feedback` omits `sessionId`.
 

@@ -4,23 +4,31 @@ This guide explains how to use the TaskSync feedback page when multiple sessions
 
 ## Core Concepts
 
-- `Route Here`: Set the session this browser tab will send feedback to.
+- `Route Here`: Set the session this browser tab will send feedback to. Shows `Current` (disabled) when the session is already the active route target.
 - `Set Default`: Set the server fallback session used when no explicit session is provided.
 - `Rename`: Set a readable alias for a session row (does not change the real MCP session ID).
+- `Prune Stale`: Remove sessions that have been inactive for over 1 hour. Shows the stale count (e.g., `Prune Stale (3)`), disabled when no stale sessions exist.
 - `route-target`: Badge showing the session currently selected by this tab.
 - `waiting`: Session is currently blocked on `get_feedback` and can be unblocked by sending feedback.
 - `queued`: Feedback exists for that session and will be returned on its next `get_feedback` call.
 
+## Wait Banner
+
+The top banner indicates the current wait state:
+
+- **Agent waiting for feedback (Xm Ys)**: The route-target session is blocked on `get_feedback`. A live timer shows how long the agent has been waiting, updated every second.
+- **A different session is waiting (Xm Ys)**: A non-target session is waiting. Use `Route Here` to focus it.
+- **No session is currently blocked on get_feedback**: Idle state.
+
 ## Session Row Status
 
-Each session row shows status chips:
+Each session row shows:
 
-- `waiting` or `idle`
-- `queued` or `no-queue`
-- `route-target` (only on the selected route session)
-- `new wait` badge (if that session recently transitioned into waiting)
-
-If a session has an alias, the alias is shown as the row title and the canonical session ID is shown below it.
+- **Name**: Alias (if set) or session ID (e.g., `opencode-1`)
+- **Session ID**: Shown below the name if an alias exists
+- **Metadata line**: Created time, last activity (relative), and wait duration when applicable
+- **Status chips**: `waiting`/`idle`, `queued`/`no-queue`, `route-target`, `stale`, `new wait`
+- **Stale dimming**: Sessions inactive for over 1 hour are visually dimmed (reduced opacity)
 
 ## Notification Modes
 

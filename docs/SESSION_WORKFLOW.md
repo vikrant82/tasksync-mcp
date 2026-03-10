@@ -7,11 +7,12 @@ Support multiple MCP sessions concurrently with isolated feedback queues.
 ## Session Lifecycle
 
 1. Client sends `initialize` to `POST /mcp` without `mcp-session-id`.
-2. Server creates a Streamable HTTP transport and session id.
+2. Server creates a Streamable HTTP transport with a human-readable session ID (e.g., `opencode-1`, `copilot-3`).
 3. Client reuses `mcp-session-id` in subsequent MCP requests.
 4. Server routes `get_feedback` and UI submissions by session id.
 5. If a stream drops temporarily, the client can reconnect while the server process remains alive.
 6. If the server restarts, the client must initialize again; preserved state is reassociated to the new live session.
+7. Sessions inactive for >4 hours (and not currently waiting) are automatically pruned every 5 minutes.
 
 ## Feedback Routing
 

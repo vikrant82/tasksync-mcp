@@ -28,10 +28,11 @@ Behavior:
 
 Session semantics:
 - Client initializes without `mcp-session-id`.
-- Server issues and tracks session id.
+- Server issues a human-readable session ID (e.g., `opencode-1`, `copilot-3`) derived from the client name and a monotonic counter.
 - Client sends `mcp-session-id` on subsequent requests.
 - Temporary stream reconnects can recover while the server process remains alive.
 - Stale session IDs from before a server restart are still rejected; continuity is provided via fresh initialize plus reassociated persisted state.
+- Sessions inactive for >4 hours (and not currently waiting) are auto-pruned every 5 minutes.
 
 ## Feedback UI Endpoints
 
@@ -43,12 +44,13 @@ Session semantics:
 - `POST /sessions/default` body: `{ "sessionId": string }`
 - `POST /sessions/active` body: `{ "sessionId": string }` (legacy alias)
 - `POST /sessions/:sessionId/alias` body: `{ "alias": string }` (empty alias clears custom name)
+- `POST /sessions/prune` — removes sessions inactive for >1 hour
 - `DELETE /sessions/:sessionId`
 
 `GET /sessions` response fields per session include:
-- `sessionId`: canonical MCP session ID
+- `sessionId`: canonical MCP session ID (human-readable, e.g., `opencode-1`)
 - `alias`: optional display label (manual alias or inferred initialize metadata)
-- `sessionUrl`, `createdAt`, `lastActivityAt`, `waitingForFeedback`, `hasQueuedFeedback`
+- `sessionUrl`, `createdAt`, `lastActivityAt`, `waitingForFeedback`, `waitStartedAt`, `hasQueuedFeedback`
 
 `GET /feedback/history` returns:
 - `sessionId`: normalized session ID used for the lookup
