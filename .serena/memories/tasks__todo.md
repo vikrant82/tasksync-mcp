@@ -1,1 +1,0 @@
-- No active carry-over tasks. Previous session-specific investigation items were cleared at user request so the next session can start fresh.

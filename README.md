@@ -3,12 +3,12 @@
 TaskSync is an MCP server focused on iterative human feedback loops for coding agents.
 
 It provides:
-- `get_feedback`: session-scoped feedback wait with minimal persisted feedback/session metadata
-- heartbeat mode via `[WAITING]` responses so clients can re-poll before long-idle transports are culled
+- `get_feedback`: session-scoped feedback wait with SSE keepalive to maintain long-lived connections
+- Optional heartbeat mode via `[WAITING]` responses for legacy/polling clients
 
 ## Transport Model
 
-TaskSync now runs as **Streamable HTTP MCP only**.
+TaskSync runs as **Streamable HTTP MCP only**.
 
 - MCP endpoint: `http://localhost:3011/mcp`
 - Health endpoint: `http://localhost:3011/health`
@@ -26,9 +26,18 @@ npm run build
 node dist/index.js --port=3011 --ui-port=3456
 ```
 
-By default, TaskSync now runs `get_feedback` in heartbeat mode with a 2 minute timeout. When no human feedback is available yet, the tool returns a text response starting with `[WAITING]` so the client/agent can immediately call `get_feedback` again instead of leaving one long-lived POST request idle for many minutes.
+By default, `get_feedback` waits **indefinitely** for human feedback. The connection is kept alive by SSE comment keepalives (`: keepalive\n\n`) sent every 30 seconds, preventing proxy/client idle timeouts. No `[WAITING]` responses are returned unless heartbeat mode is explicitly enabled.
 
-TaskSync is feedback-only and does not use workspace path arguments.
+## SSE Keepalive
+
+When `get_feedback` is called, the POST response stream stays open while waiting for human feedback. To prevent network intermediaries (proxies, load balancers, HTTP clients) from dropping the idle connection:
+
+- The server writes SSE comment keepalives (`: keepalive\n\n`) every 30 seconds
+- SSE comments are spec-compliant and transparently ignored by all MCP clients
+- No token cost, no context bloat for the agent
+- The connection stays alive until feedback is submitted or the client disconnects
+
+This eliminates the previous pattern of repeated `[WAITING]` → re-POST cycles that consumed tokens and filled agent context windows.
 
 ## OpenCode Remote MCP Configuration
 
@@ -47,32 +56,59 @@ Reference: `https://opencode.ai/docs/mcp-servers/`
 }
 ```
 
-Optional auth headers:
+## VS Code Copilot Configuration
+
+Add to `.vscode/mcp.json` in your workspace:
 
 ```json
 {
-  "$schema": "https://opencode.ai/config.json",
-  "mcp": {
+  "servers": {
     "tasksync": {
-      "type": "remote",
-      "url": "https://mcp.example.com/mcp",
-      "enabled": true,
-      "headers": {
-        "Authorization": "Bearer MY_API_KEY"
-      }
+      "url": "http://localhost:3011/mcp"
     }
-  }
+  },
+  "inputs": []
 }
 ```
 
+Or place in `~/.vscode/mcp.json` for global configuration. See `docs/examples/copilot-mcp.json` for reference.
+
 ## CLI Options
 
-- `--port=<n>`: MCP Streamable HTTP port (default `3011`)
-- `--ui-port=<n>`: feedback UI port (default `3456`)
-- `--timeout=<ms>`: `get_feedback` heartbeat timeout (default `120000`; use `0` to block indefinitely)
-- `--no-ui`: disable embedded feedback UI
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--port=<n>` | `3011` | MCP Streamable HTTP port |
+| `--ui-port=<n>` | `3456` | Feedback UI port |
+| `--heartbeat` | *(flag, off)* | Boolean flag — include to enable legacy heartbeat mode. When enabled, returns `[WAITING]` text after timeout; agent must re-call `get_feedback`. When omitted (default), `get_feedback` waits indefinitely with SSE keepalive. |
+| `--timeout=<ms>` | `3600000` | How long to wait (in ms) before returning `[WAITING]`. **Only effective when `--heartbeat` is present.** Ignored in default keepalive mode. |
+| `--no-ui` | *(flag, off)* | Boolean flag — include to disable embedded feedback UI |
 
-Agent prompt guidance: treat any `get_feedback` response beginning with `[WAITING]` as a keepalive/re-poll signal, not as user feedback.
+### Default mode (recommended)
+
+```bash
+node dist/index.js --port=3011 --ui-port=3456
+```
+
+`get_feedback` waits indefinitely with SSE keepalive. No `[WAITING]` is returned.
+
+### Heartbeat mode (legacy)
+
+```bash
+node dist/index.js --port=3011 --ui-port=3456 --heartbeat --timeout=230000
+```
+
+`get_feedback` returns `[WAITING]` after the timeout, and the agent re-calls. Use the `-waiting` agent prompt variants with this mode.
+
+## Agent Prompts
+
+TaskSync includes agent prompt files for configuring the daemon loop behavior:
+
+| Prompt File | Mode | Use with |
+|-------------|------|----------|
+| `task-sync-agent-opencode.md` | Default (keepalive) | OpenCode |
+| `task-sync-agent-copilot.md` | Default (keepalive) | VS Code Copilot |
+| `task-sync-agent-opencode-waiting.md` | Heartbeat | OpenCode + `--heartbeat` |
+| `task-sync-agent-copilot-waiting.md` | Heartbeat | VS Code Copilot + `--heartbeat` |
 
 ## Persistence and Reconnect Behavior
 
@@ -84,7 +120,14 @@ Agent prompt guidance: treat any `get_feedback` response beginning with `[WAITIN
 ## Logging
 
 - `TASKSYNC_LOG_LEVEL=debug|info|warn|error` (default: `info`)
-- Example: `TASKSYNC_LOG_LEVEL=debug node dist/index.js --port=3011 --ui-port=3457`
+- `TASKSYNC_LOG_FILE=<path>` — log to file instead of stdout
+- Example: `TASKSYNC_LOG_LEVEL=debug TASKSYNC_LOG_FILE=tasksync.log node dist/index.js --port=3011 --ui-port=3457`
+
+Key log events for monitoring keepalive:
+- `feedback.keepalive.started` — keepalive interval activated
+- `feedback.keepalive.sent` — keepalive written (sampled every 10th)
+- `feedback.keepalive.stopped` — interval cleared, with `reason` and `totalSent`
+- `feedback.return.live` — feedback delivered, with `waitDurationMs` and `keepalivesSent`
 
 Session routing note: UI "default session" is the fallback target used only when `POST /feedback` omits `sessionId`.
 

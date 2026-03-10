@@ -1,4 +1,0 @@
-- `npm run build`
-- validate `/events` live updates
-- validate `TASKSYNC_LOG_FILE`
-- validate `/health`

@@ -1,27 +1,40 @@
-Updated 2026-03-06.
+Updated 2026-03-10.
 
-- Runtime is centered in `index.ts` with two Express apps:
+## Core Architecture
+- Runtime centered in `index.ts` with two Express apps:
   1. Streamable HTTP MCP server on `/mcp`
   2. Feedback UI server on `/`, `/session/:sessionId`, `/events`, `/feedback/history`, `/sessions`, and session mutation routes.
-- MCP transport uses `StreamableHTTPServerTransport` with transient in-memory replay support only; replay history is not persisted to disk.
-- Session/UI persistence is handled by `session-state-store.ts`, which stores minimal file-backed metadata in `.tasksync/session-state.json`:
-  - latest/queued feedback
-  - bounded submitted feedback history
-  - session metadata
-  - alias metadata
-  - active UI session
-- `stream-event-store.ts` provides the transient in-memory event store used for short-lived replay while the process remains alive.
-- UI state is pushed via SSE from `/events`; server broadcasts UI state on session and waiter lifecycle transitions.
-- UI target session resolution rule is: requested session if live, else active UI session if live, else first live session, else default session constant.
-- Logging now supports:
-  - compact structured logs via `logEvent(...)`
-  - pretty debug request/response logs for MCP and UI traffic
-  - request IDs and MCP method/result hints in debug mode
-  - optional dual-write file logging via `TASKSYNC_LOG_FILE`
-- Session-close semantics:
-  - stream close clears waiter and logs closure, but does not delete session state
-  - explicit MCP `DELETE /mcp` fully removes session state
-  - UI `DELETE /sessions/:sessionId` also fully removes session state
-  - closing the browser tab does not delete MCP sessions
-- 2026-03-06 update: `get_feedback` waiter ownership is tracked per raw HTTP request via request-scoped IDs. `index.ts` attaches request abort/response close cleanup so abandoned long-lived POST waits clear only their own waiter and later feedback is queued instead of being delivered into a stale waiter.
-- Current architectural follow-up: `index.ts` now carries substantial responsibilities (MCP lifecycle, UI routes, SSE state push, logging, persistence wiring) and could be split into smaller modules later.
+
+## Transport & Keepalive
+- MCP transport: `StreamableHTTPServerTransport` with transient in-memory replay
+- `requestContext` AsyncLocalStorage carries `{ requestId, res?: express.Response }` per request
+- SSE keepalive: writes `: keepalive\n\n` every 30s to POST response stream via `res.write()`
+  - Bypasses SDK transport abstraction (writes directly to Express response)
+  - Cleared on: feedback received, timeout, connection close, write error
+  - Configurable via `KEEPALIVE_INTERVAL_MS = 30000`
+- `--heartbeat` flag: opt-in for legacy [WAITING] timeout mode
+  - `heartbeat=false` (default): `feedbackTimeout=0`, waits indefinitely
+  - `heartbeat=true`: `feedbackTimeout` from `--timeout=` or `DEFAULT_TIMEOUT` (1 hour)
+
+## Session & State Management
+- `session-state-store.ts`: file-backed metadata in `.tasksync/session-state.json`
+  - latest/queued feedback, bounded feedback history, session metadata, alias metadata, active UI session
+- `stream-event-store.ts`: transient in-memory event store for short-lived replay
+- Session close: stream close clears waiter + logs; DELETE fully removes state
+
+## Feedback Flow
+- `get_feedback` waiter ownership tracked per raw HTTP request via request-scoped IDs
+- Request abort/response close cleanup: abandoned POST waits clear only their own waiter
+- Later feedback queued if no active waiter
+
+## Logging
+- Compact structured logs via `logEvent(...)`
+- Pretty debug request/response logs with request IDs and MCP method hints
+- Debug body truncation: `DEBUG_BODY_MAX_CHARS = 2000`, HTML replaced with `[HTML content omitted]`
+- Response accumulation cap: `MAX_RESPONSE_LOG_BYTES = 50_000`
+- Keepalive comments filtered from debug accumulation
+- Optional file logging via `TASKSYNC_LOG_FILE`
+
+## UI State
+- SSE push from `/events`; broadcasts on session and waiter lifecycle transitions
+- Target session resolution: requested → active UI → first live → default constant

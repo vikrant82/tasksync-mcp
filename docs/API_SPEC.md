@@ -15,9 +15,9 @@ Waits for feedback text for the current MCP session.
 
 Behavior:
 - If queued feedback exists for the session, returns immediately.
-- Otherwise blocks until new feedback arrives (or timeout if configured).
-- Timeout mode (`--timeout>0`) returns:
-  - `[WAITING] No new feedback yet. Call get_feedback again to continue waiting.`
+- Otherwise blocks until new feedback arrives.
+- Default: waits indefinitely with SSE keepalive (`: keepalive\n\n` every 30s).
+- Heartbeat mode (`--heartbeat`): returns `[WAITING]` on timeout (`--timeout=<ms>`).
 
 ## MCP HTTP Endpoints
 

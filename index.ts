@@ -19,21 +19,26 @@ import { FEEDBACK_HTML } from "./feedback-html.js";
 import { SessionStateStore } from "./session-state-store.js";
 import { InMemoryStreamEventStore } from "./stream-event-store.js";
 
-const DEFAULT_TIMEOUT = 120000; // return [WAITING] after 2m to avoid long-idle transport disconnects
+const DEFAULT_TIMEOUT = 3_600_000; // safety-net timeout (1 hour); SSE keepalive prevents idle disconnects, this is the absolute max wait
 
 const args = process.argv.slice(2);
 const noUI = args.includes("--no-ui");
 const mcpPort = parseInt(args.find((arg) => arg.startsWith("--port="))?.split("=")[1] || "3011", 10);
 const uiPortArg = args.find((arg) => arg.startsWith("--ui-port="));
 const uiPort = parseInt(uiPortArg?.split("=")[1] || process.env.FEEDBACK_PORT || "3456", 10);
+const heartbeat = args.includes("--heartbeat"); // opt-in: return [WAITING] on timeout (legacy short-poll mode)
 const timeoutArg = args.find((arg) => arg.startsWith("--timeout="));
 const parsedTimeout = timeoutArg ? parseInt(timeoutArg.split("=")[1], 10) : NaN;
-const feedbackTimeout = Number.isNaN(parsedTimeout) ? DEFAULT_TIMEOUT : parsedTimeout;
+const feedbackTimeout = heartbeat
+  ? (Number.isNaN(parsedTimeout) ? DEFAULT_TIMEOUT : parsedTimeout)
+  : 0; // heartbeat=false → no timeout, wait indefinitely (keepalive keeps connection alive)
 const logLevel = (process.env.TASKSYNC_LOG_LEVEL || "info").toLowerCase();
 const logFilePath = process.env.TASKSYNC_LOG_FILE?.trim() || "";
 
 const DEFAULT_FEEDBACK_SESSION = "__default__";
 const STREAM_RETRY_INTERVAL_MS = 2000;
+const KEEPALIVE_INTERVAL_MS = 30000; // 30s SSE comment keepalive to prevent HTTP connection timeout
+const DEBUG_BODY_MAX_CHARS = 2000; // truncate debug-logged bodies to this length
 
 type FeedbackChannelState = {
   pendingWaiter: {
@@ -75,7 +80,7 @@ const inferredAliasBySession = new Map<string, string>();
 const clientGenerationByAlias = new Map<string, number>();
 const sessionStateStore = new SessionStateStore();
 const streamEventStore = new InMemoryStreamEventStore();
-const requestContext = new AsyncLocalStorage<{ requestId: string }>();
+const requestContext = new AsyncLocalStorage<{ requestId: string; res?: express.Response }>();
 let activeUiSessionId = DEFAULT_FEEDBACK_SESSION;
 type UiEventClient = { res: express.Response; targetSessionId: string };
 const uiEventClients = new Set<UiEventClient>();
@@ -186,8 +191,14 @@ function normalizeDebugBody(body: unknown, contentType?: string): unknown {
     return normalizeDebugBody(Buffer.from(body).toString("utf8"), contentType);
   }
   if (typeof body === "string") {
+    if (contentType?.includes("text/html")) {
+      return `[HTML content omitted, ${body.length} chars]`;
+    }
     if (contentType?.includes("text/event-stream")) {
       return parseSseDebugBody(body);
+    }
+    if (body.length > DEBUG_BODY_MAX_CHARS) {
+      return maybeParseJson(body.slice(0, DEBUG_BODY_MAX_CHARS) + `... [truncated, ${body.length} total chars]`);
     }
     return maybeParseJson(body);
   }
@@ -300,6 +311,8 @@ function installDebugHttpLogging(app: express.Express, scope: string) {
     const startedAt = Date.now();
     const requestId = randomUUID();
     const responseChunks: Buffer[] = [];
+    let totalResponseBytes = 0;
+    const MAX_RESPONSE_LOG_BYTES = 50_000;
     const originalWrite = res.write.bind(res);
     const originalEnd = res.end.bind(res);
 
@@ -313,10 +326,20 @@ function installDebugHttpLogging(app: express.Express, scope: string) {
       return Buffer.from(String(chunk), "utf8");
     }
 
+    function shouldCapture(chunk: Buffer): boolean {
+      // Skip SSE keepalive comments from debug accumulation
+      const text = chunk.toString("utf8");
+      if (text === ": keepalive\n\n") return false;
+      // Stop accumulating after threshold
+      if (totalResponseBytes >= MAX_RESPONSE_LOG_BYTES) return false;
+      return true;
+    }
+
     res.write = ((chunk: unknown, ...args: unknown[]) => {
       const loggedChunk = toLoggedBuffer(chunk);
-      if (loggedChunk) {
+      if (loggedChunk && shouldCapture(loggedChunk)) {
         responseChunks.push(loggedChunk);
+        totalResponseBytes += loggedChunk.length;
       }
       return originalWrite(chunk as never, ...(args as Parameters<typeof originalWrite> extends [unknown, ...infer Rest] ? Rest : never));
     }) as typeof res.write;
@@ -652,6 +675,7 @@ function registerServerHandlers(targetServer: Server) {
   });
 
   targetServer.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
+    let keepaliveInterval: ReturnType<typeof setInterval> | null = null;
     try {
       const { name, arguments: args } = request.params;
       const sessionId = getSessionId(extra?.sessionId);
@@ -702,8 +726,44 @@ function registerServerHandlers(targetServer: Server) {
             requestId,
             waitId,
             waitStartedAt,
+            heartbeat,
             timeoutMs: feedbackTimeout,
           });
+
+          // --- SSE keepalive: write SSE comments to prevent HTTP connection timeout ---
+          const httpRes = requestContext.getStore()?.res;
+          let keepaliveSentCount = 0;
+          const clearKeepalive = (reason: string) => {
+            if (keepaliveInterval) {
+              clearInterval(keepaliveInterval);
+              keepaliveInterval = null;
+              logEvent("debug", "feedback.keepalive.stopped", {
+                sessionId, requestId, waitId, reason, totalSent: keepaliveSentCount,
+              });
+            }
+          };
+          if (httpRes && !httpRes.writableEnded) {
+            logEvent("debug", "feedback.keepalive.started", {
+              sessionId, requestId, waitId, intervalMs: KEEPALIVE_INTERVAL_MS,
+            });
+            keepaliveInterval = setInterval(() => {
+              if (!httpRes.writableEnded) {
+                try {
+                  httpRes.write(": keepalive\n\n");
+                  keepaliveSentCount++;
+                  if (keepaliveSentCount % 10 === 0) {
+                    logEvent("debug", "feedback.keepalive.sent", {
+                      sessionId, requestId, waitId, count: keepaliveSentCount,
+                    });
+                  }
+                } catch {
+                  clearKeepalive("write_error");
+                }
+              } else {
+                clearKeepalive("stream_ended");
+              }
+            }, KEEPALIVE_INTERVAL_MS);
+          }
 
           let result: PendingFeedbackResult | null;
           if (feedbackTimeout > 0) {
@@ -716,6 +776,7 @@ function registerServerHandlers(targetServer: Server) {
           }
 
           if (result === null) {
+            clearKeepalive("timeout");
             const timedOutWaiter = feedbackState.pendingWaiter;
             if (timedOutWaiter?.waitId === waitId) {
               feedbackState.pendingWaiter = null;
@@ -729,6 +790,7 @@ function registerServerHandlers(targetServer: Server) {
               waitStartedAt,
               waitDurationMs: Date.now() - Date.parse(waitStartedAt),
               timeoutMs: feedbackTimeout,
+              keepalivesSent: keepaliveSentCount,
             });
             return {
               content: [{ type: "text", text: "[WAITING] No new feedback yet. Call get_feedback again to continue waiting." }],
@@ -736,6 +798,7 @@ function registerServerHandlers(targetServer: Server) {
           }
 
           if (result.type === "closed") {
+            clearKeepalive("connection_closed");
             logEvent("warn", "feedback.wait.interrupted", {
               sessionId,
               requestId,
@@ -743,12 +806,14 @@ function registerServerHandlers(targetServer: Server) {
               waitStartedAt,
               waitDurationMs: Date.now() - Date.parse(waitStartedAt),
               reason: result.reason,
+              keepalivesSent: keepaliveSentCount,
             });
             return {
               content: [{ type: "text", text: "[WAITING] Feedback wait interrupted. Call get_feedback again to continue waiting." }],
             };
           }
 
+          clearKeepalive("feedback_received");
           logEvent("info", "feedback.return.live", {
             sessionId,
             requestId,
@@ -756,6 +821,7 @@ function registerServerHandlers(targetServer: Server) {
             waitStartedAt,
             waitDurationMs: Date.now() - Date.parse(waitStartedAt),
             contentLength: result.content.length,
+            keepalivesSent: keepaliveSentCount,
           });
           return formatFeedbackResponse(result.content);
         }
@@ -764,6 +830,7 @@ function registerServerHandlers(targetServer: Server) {
           throw new Error(`Unknown tool: ${name}`);
       }
     } catch (error) {
+      if (keepaliveInterval) { clearInterval(keepaliveInterval); keepaliveInterval = null; }
       const errorMessage = error instanceof Error ? error.message : String(error);
       logEvent("error", "mcp.tool.error", { error: errorMessage });
       return {
@@ -1162,7 +1229,7 @@ async function runStreamableHTTPServer() {
         attachPendingWaiterCleanup(req, res, sessionId, requestId);
       }
 
-      await requestContext.run({ requestId }, async () => {
+      await requestContext.run({ requestId, res }, async () => {
         await entry.transport.handleRequest(req, res, req.body);
       });
       await persistSessionMetadata(sessionId || entry.transport.sessionId || DEFAULT_FEEDBACK_SESSION, entry);
@@ -1221,7 +1288,9 @@ async function runStreamableHTTPServer() {
       mcpPort,
       uiEnabled: !noUI,
       uiPort,
+      heartbeat,
       timeoutMs: feedbackTimeout,
+      keepaliveIntervalMs: KEEPALIVE_INTERVAL_MS,
       logLevel,
     });
     console.error(`TaskSync MCP Server running on Streamable HTTP at http://localhost:${mcpPort}`);

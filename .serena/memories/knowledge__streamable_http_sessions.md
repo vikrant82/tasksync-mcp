@@ -1,9 +1,34 @@
-TaskSync Streamable HTTP session notes (updated 2026-03-06):
+# Streamable HTTP Session Management
 
-- Long-lived blocking `get_feedback` POST requests are being disconnected after roughly 4-5 minutes of idle time in current real-world use, likely by network/proxy/client transport behavior rather than TaskSync application logic.
-- Server-side stale waiter loss has been fixed by request-owned waiter cleanup in `index.ts`: when the underlying request disconnects, the server clears only the owning waiter and later feedback is queued instead of being lost.
-- Remaining issue: some clients (observed with OpenCode) do not promptly re-issue `get_feedback` on the same session after an interrupted wait, so UI legitimately flips from `waiting` to `idle` and late feedback queues until the client/session is manually restarted or reinitialized.
-- Decision: adopt heartbeat/poll mode as the short-term standard mitigation. Prefer the existing timeout-based `[WAITING]` response pattern over inventing semantic fake feedback. This keeps the MCP tool-call lifecycle standard: server returns a non-terminal waiting response before likely idle cutoffs, and the client/agent re-calls `get_feedback`.
-- Recommended near-term approach: configure a nonzero `get_feedback` timeout shorter than the observed disconnect window (e.g. 120000-180000 ms), document it as heartbeat mode, and update the OpenCode agent prompt to treat `[WAITING]` responses as non-semantic keepalive signals that should immediately trigger another `get_feedback` call.
-- Additional 2026-03-06 finding from local OpenCode source inspection: `opencode/packages/opencode/src/mcp/index.ts` appears to lack generic runtime reconnect/retry handling for ordinary remote MCP transport disconnects. Aside from OAuth-specific reconnect flow, it mainly connects once, validates once, and does not install generic `onclose`/`onerror` recovery for later interrupted calls. This aligns with observed behavior where interrupted long-lived `get_feedback` waits are not promptly re-established on the same session.
-- Follow-up work: explore a local MCP mode/process to reduce remote transport fragility, but treat that as a separate architectural improvement after heartbeat mode is in place.
+## Transport Model
+- Single endpoint (default /mcp) handles POST, GET, DELETE
+- Sessions identified by `Mcp-Session-Id` header (UUID)
+- Session state persisted in `.tasksync/session-state.json`
+- GET SSE stream for server→client notifications (reconnectable via Last-Event-ID)
+- POST SSE stream for tool call responses (kept alive by SSE keepalive)
+
+## Session Lifecycle
+1. Client sends POST `initialize` → server returns Mcp-Session-Id
+2. Client sends GET to subscribe to notification stream
+3. Client sends POST `tools/call` for each tool invocation
+4. GET stream may disconnect/reconnect (~5 min cycles, auto-handled by SDK)
+5. POST for get_feedback is long-lived: stays open with keepalive until feedback arrives
+6. Session ends when client sends DELETE or connection drops permanently
+
+## Connection Resilience
+- **GET stream:** SDK auto-reconnects; transparent to agent
+- **POST stream:** Kept alive by SSE comment keepalive (`: keepalive\n\n` every 30s)
+- **Failure modes:** POST disconnect → error propagates to agent (SDK does NOT retry POST)
+- **Default mode:** No timeout, no [WAITING] — POST stays open indefinitely
+- **Heartbeat mode (--heartbeat):** Timeout fires → [WAITING] returned → agent re-POSTs
+
+## Session State Store
+- File-based: `.tasksync/session-state.json`
+- Stores feedback text + pending waiter references per sessionId
+- Pruning: sessions not accessed for >24h are cleaned up
+- Structure: `{ sessions: { [id]: { feedback, waitingForFeedback, ... } } }`
+
+## Event Replay
+- InMemoryStreamEventStore tracks SSE events with sequential IDs
+- Supports Last-Event-ID for GET stream resumption
+- POST response events are NOT resumable (no standard mechanism)
