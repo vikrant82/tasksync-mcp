@@ -458,17 +458,25 @@ export const FEEDBACK_HTML = `<!DOCTYPE html>
   let waitTimerInterval = null;
   let currentWaitStartedAt = null;
 
-  function formatElapsed(isoStart) {
-    const ms = Date.now() - new Date(isoStart).getTime();
-    if (ms < 0) return '0s';
-    const totalSec = Math.floor(ms / 1000);
-    const h = Math.floor(totalSec / 3600);
-    const m = Math.floor((totalSec % 3600) / 60);
-    const s = totalSec % 60;
-    if (h > 0) return h + 'h ' + m + 'm ' + s + 's';
-    if (m > 0) return m + 'm ' + s + 's';
-    return s + 's';
-  }
+   function formatElapsed(isoStart) {
+     const ms = Date.now() - new Date(isoStart).getTime();
+     if (ms < 0) return '0s';
+     const totalSec = Math.floor(ms / 1000);
+     const h = Math.floor(totalSec / 3600);
+     const m = Math.floor((totalSec % 3600) / 60);
+     const s = totalSec % 60;
+     if (h > 0) return h + 'h ' + m + 'm ' + s + 's';
+     if (m > 0) return m + 'm ' + s + 's';
+     return s + 's';
+   }
+
+   function formatTimeShort(date) {
+     const h = date.getHours();
+     const m = String(date.getMinutes()).padStart(2, '0');
+     const ampm = h >= 12 ? 'PM' : 'AM';
+     const h12 = h % 12 || 12;
+     return h12 + ':' + m + ' ' + ampm;
+   }
 
   // ── Last known sessions for filter re-rendering ──
   let lastSessionsData = null;
@@ -969,7 +977,8 @@ export const FEEDBACK_HTML = `<!DOCTYPE html>
         renderSessionList(sessions, active);
         lastRenderedSessionSignature = sessionSignature;
       }
-    } catch {
+    } catch (err) {
+      console.error('Error loading sessions:', err);
       sessionMetaEl.textContent = 'Error loading sessions';
       sessionListEl.innerHTML = '';
     }
