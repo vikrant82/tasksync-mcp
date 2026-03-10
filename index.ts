@@ -1167,36 +1167,19 @@ async function runStreamableHTTPServer() {
 
           // Check for session resurrection: known old session ID + initialize request
           const persistedMeta = sessionStateStore.getSnapshot().sessionMetadataById[sessionId];
-          const isInit = req.method === "POST" && isInitializeRequest(req.body);
-          logEvent("debug", "mcp.session.lookup.miss", {
-            sessionId,
-            method: req.method,
-            isInitialize: isInit,
-            hasPersistedMeta: !!persistedMeta,
-            persistedStatus: persistedMeta?.status,
-            persistedAlias: persistedMeta?.clientAlias,
-            liveSessions: Array.from(streamableSessions.keys()),
-          });
-
-          if (isInit && persistedMeta) {
+          if (req.method === "POST" && isInitializeRequest(req.body) && persistedMeta) {
             resurrectionSessionId = sessionId;
-            logEvent("info", "mcp.session.resurrecting.header", {
+            logEvent("info", "mcp.session.resurrecting", {
               sessionId,
               clientAlias: persistedMeta.clientAlias,
               originalCreatedAt: persistedMeta.createdAt,
-              lastActivityAt: persistedMeta.lastActivityAt,
-              generation: persistedMeta.clientGeneration,
             });
             // Fall through to session creation below
           } else if (req.method === "GET" && persistedMeta) {
             // SSE reconnection for a session pending resurrection.
             // Return 503 instead of 404 so the client retries WITHOUT clearing its session ID.
             // (The MCP SDK clears sessionId on 404, preventing header-based resurrection.)
-            logEvent("info", "mcp.session.sse.pending_resurrection", {
-              sessionId,
-              clientAlias: persistedMeta.clientAlias,
-              lastActivityAt: persistedMeta.lastActivityAt,
-            });
+            logEvent("info", "mcp.session.sse.pending_resurrection", { sessionId });
             res.status(503).setHeader("Retry-After", "2").json({
               jsonrpc: "2.0",
               error: { code: -32000, message: "Session is restarting, please retry" },
@@ -1204,12 +1187,7 @@ async function runStreamableHTTPServer() {
             });
             return;
           } else {
-            logEvent("warn", "mcp.session.invalid", {
-              sessionId,
-              method: req.method,
-              isInitialize: isInit,
-              hasPersistedMeta: !!persistedMeta,
-            });
+            logEvent("warn", "mcp.session.invalid", { sessionId, method: req.method });
             res.status(404).json({
               jsonrpc: "2.0",
               error: { code: -32000, message: "Bad Request: Invalid session ID" },
@@ -1248,30 +1226,11 @@ async function runStreamableHTTPServer() {
         // Alias-based resurrection: find most recent orphaned session for this client
         if (!resurrectionSessionId && clientAlias !== "unknown-client") {
           const snapshot = sessionStateStore.getSnapshot();
-          const persistedIds = Object.keys(snapshot.sessionMetadataById);
-          logEvent("debug", "mcp.session.resurrection.alias_scan", {
-            clientAlias,
-            persistedSessionCount: persistedIds.length,
-            persistedSessionIds: persistedIds,
-            liveSessionIds: Array.from(streamableSessions.keys()),
-          });
           let bestCandidate: { sessionId: string; lastActivityAt: number } | undefined;
           for (const [sid, meta] of Object.entries(snapshot.sessionMetadataById)) {
-            if (streamableSessions.has(sid)) {
-              logEvent("debug", "mcp.session.resurrection.alias_skip_live", { sid, clientAlias: meta.clientAlias });
-              continue;
-            }
-            if (meta.clientAlias !== clientAlias) {
-              logEvent("debug", "mcp.session.resurrection.alias_skip_mismatch", { sid, metaAlias: meta.clientAlias, wantAlias: clientAlias });
-              continue;
-            }
+            if (streamableSessions.has(sid)) continue; // still live, skip
+            if (meta.clientAlias !== clientAlias) continue; // different client type
             const lastActivity = meta.lastActivityAt ? new Date(meta.lastActivityAt).getTime() : 0;
-            logEvent("debug", "mcp.session.resurrection.alias_candidate", {
-              sid,
-              clientAlias: meta.clientAlias,
-              lastActivityAt: meta.lastActivityAt,
-              generation: meta.clientGeneration,
-            });
             if (!bestCandidate || lastActivity > bestCandidate.lastActivityAt) {
               bestCandidate = { sessionId: sid, lastActivityAt: lastActivity };
             }
@@ -1283,8 +1242,6 @@ async function runStreamableHTTPServer() {
               clientAlias,
               lastActivityAt: new Date(bestCandidate.lastActivityAt).toISOString(),
             });
-          } else {
-            logEvent("debug", "mcp.session.resurrection.alias_no_candidate", { clientAlias });
           }
         }
 
@@ -1296,21 +1253,10 @@ async function runStreamableHTTPServer() {
           const oldMeta = sessionStateStore.getSnapshot().sessionMetadataById[resurrectionSessionId];
           effectiveGeneration = oldMeta?.clientGeneration ?? 0;
           sessionIdGeneratorFn = () => resurrectionSessionId!;
-          logEvent("debug", "mcp.session.resurrection.transport_setup", {
-            resurrectionSessionId,
-            effectiveGeneration,
-            oldMetaStatus: oldMeta?.status,
-            oldMetaLastActivity: oldMeta?.lastActivityAt,
-          });
         } else {
           effectiveGeneration = await nextClientGeneration(clientAlias);
           const sessionSlug = slugifyForSessionId(clientAlias);
           sessionIdGeneratorFn = () => `${sessionSlug}-${effectiveGeneration}`;
-          logEvent("debug", "mcp.session.new.transport_setup", {
-            sessionSlug,
-            effectiveGeneration,
-            clientAlias,
-          });
         }
 
         let createdTransport: StreamableHTTPServerTransport;
