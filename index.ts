@@ -296,10 +296,10 @@ function buildUiStatePayload(targetSessionId?: string) {
   };
 }
 
-function broadcastUiState(targetSessionId?: string) {
+function broadcastUiState(_triggerSessionId?: string) {
   if (uiEventClients.size === 0) return;
   for (const client of uiEventClients) {
-    const payload = JSON.stringify(buildUiStatePayload(targetSessionId || client.targetSessionId));
+    const payload = JSON.stringify(buildUiStatePayload(client.targetSessionId));
     client.res.write(`event: state\ndata: ${payload}\n\n`);
   }
 }
@@ -870,19 +870,20 @@ function startFeedbackUI() {
   feedbackApp.use(express.json());
   installDebugHttpLogging(feedbackApp, "ui.http");
 
-  function renderHtml(): string {
-    const activeAlias = getSessionAlias(activeUiSessionId);
-    const activeLabel = activeAlias ? `${activeAlias} (${activeUiSessionId})` : activeUiSessionId;
+  function renderHtml(viewSessionId?: string): string {
+    const displaySessionId = viewSessionId || activeUiSessionId;
+    const displayAlias = getSessionAlias(displaySessionId);
+    const displayLabel = displayAlias ? `${displayAlias} (${displaySessionId})` : displaySessionId;
     return FEEDBACK_HTML
-      .replace("ACTIVE_SESSION_INFO", `Active session: ${activeLabel} | Known sessions: ${streamableSessions.size}`);
+      .replace("ACTIVE_SESSION_INFO", `Active session: ${displayLabel} | Known sessions: ${streamableSessions.size}`);
   }
 
   feedbackApp.get("/", (_req, res) => {
     res.type("html").send(renderHtml());
   });
 
-  feedbackApp.get("/session/:sessionId", (_req, res) => {
-    res.type("html").send(renderHtml());
+  feedbackApp.get("/session/:sessionId", (req, res) => {
+    res.type("html").send(renderHtml(req.params.sessionId));
   });
 
   feedbackApp.get("/events", (req, res) => {
@@ -1075,6 +1076,18 @@ function startFeedbackUI() {
         sessionStateStore.deleteSession(sessionId);
         pruned++;
         logEvent("info", "session.auto-pruned", { sessionId, inactiveMs: now - lastActivity });
+      }
+    }
+    // Also clean up orphaned persisted sessions that are no longer live
+    const persistedSessions = sessionStateStore.getSnapshot().sessionMetadataById;
+    for (const [sessionId, meta] of Object.entries(persistedSessions)) {
+      if (streamableSessions.has(sessionId)) continue; // still live
+      if (feedbackStateBySession.has(sessionId)) continue; // already handled above
+      const lastActivity = meta?.lastActivityAt ? new Date(meta.lastActivityAt).getTime() : 0;
+      if (lastActivity > 0 && (now - lastActivity) > AUTO_PRUNE_STALE_THRESHOLD_MS) {
+        sessionStateStore.deleteSession(sessionId);
+        pruned++;
+        logEvent("info", "session.auto-pruned.orphaned", { sessionId, inactiveMs: now - lastActivity });
       }
     }
     if (pruned > 0) {

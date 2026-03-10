@@ -103,6 +103,7 @@ export const FEEDBACK_HTML = `<!DOCTYPE html>
   .session-item.alert { border-color: rgba(63,185,80,0.55); box-shadow: 0 0 0 2px rgba(63,185,80,0.08) inset; }
   :root[data-theme="light"] .session-item.alert { border-color: rgba(26,127,55,0.5); box-shadow: 0 0 0 2px rgba(26,127,55,0.06) inset; }
   .session-name { font-size: 0.82rem; font-weight: 600; color: var(--fg); margin-bottom: 0.15rem; }
+  .session-item.route-target .session-name { font-weight: 800; color: var(--accent); }
   .session-id { font-family: monospace; font-size: 0.8rem; word-break: break-all; color: var(--fg-muted); }
   .session-meta { font-size: 0.72rem; color: var(--fg-muted); margin: 0.15rem 0; opacity: 0.8; }
   .session-flags { font-size: 0.75rem; color: var(--fg-muted); margin: 0.25rem 0; }
@@ -444,7 +445,7 @@ export const FEEDBACK_HTML = `<!DOCTYPE html>
   const STORAGE_NOTIFY_DESKTOP = 'tasksync.notify.desktop';
   const STORAGE_NOTIFY_MODE = 'tasksync.notify.mode';
   const STORAGE_HISTORY_COLLAPSED = 'tasksync.history.collapsed';
-  const STORAGE_DRAFT = 'tasksync.draft';
+   const STORAGE_DRAFT = pathSessionParam ? 'tasksync.draft.' + pathSessionParam : 'tasksync.draft';
   const STORAGE_THEME = 'tasksync.theme';
 
   // ── Notification state ──
@@ -813,7 +814,7 @@ export const FEEDBACK_HTML = `<!DOCTYPE html>
     const metaLine = metaParts.length > 0
       ? '<div class="session-meta">' + metaParts.join(' · ') + '</div>'
       : '';
-    return '<li class="session-item ' + (isActive ? 'active ' : '') + (isStale ? 'stale ' : '') + (hasAlert ? 'alert' : '') + '">'
+    return '<li class="session-item ' + (isRoute ? 'route-target ' : '') + (isActive ? 'active ' : '') + (isStale ? 'stale ' : '') + (hasAlert ? 'alert' : '') + '">'
       + '<div class="session-name">' + escapeHtml(displayName) + '</div>'
       + (alias ? ('<div class="session-id">' + escapeHtml(s.sessionId) + '</div>') : '')
       + '<div class="session-flags">' + waitingFlag + queueFlag + routeFlag + staleFlag + (hasAlert ? ' <span class="session-alert-badge">new wait</span>' : '') + '</div>'
