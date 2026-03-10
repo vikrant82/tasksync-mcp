@@ -2,7 +2,7 @@
  * Shared HTML template for the TaskSync feedback web UI.
  * Used by both the standalone feedback-server and the embedded MCP server.
  *
- * The placeholder FEEDBACK_PATH is replaced at serve time with transport info text.
+ * The placeholder ACTIVE_SESSION_INFO is replaced at serve time with the current session label.
  */
 
 export const FEEDBACK_HTML = `<!DOCTYPE html>
@@ -99,10 +99,12 @@ export const FEEDBACK_HTML = `<!DOCTYPE html>
   }
   :root[data-theme="light"] .session-item { background: var(--bg); }
   .session-item.active { border-color: var(--accent); }
+  .session-item.stale { opacity: 0.55; }
   .session-item.alert { border-color: rgba(63,185,80,0.55); box-shadow: 0 0 0 2px rgba(63,185,80,0.08) inset; }
   :root[data-theme="light"] .session-item.alert { border-color: rgba(26,127,55,0.5); box-shadow: 0 0 0 2px rgba(26,127,55,0.06) inset; }
   .session-name { font-size: 0.82rem; font-weight: 600; color: var(--fg); margin-bottom: 0.15rem; }
   .session-id { font-family: monospace; font-size: 0.8rem; word-break: break-all; color: var(--fg-muted); }
+  .session-meta { font-size: 0.72rem; color: var(--fg-muted); margin: 0.15rem 0; opacity: 0.8; }
   .session-flags { font-size: 0.75rem; color: var(--fg-muted); margin: 0.25rem 0; }
   .flag {
     display: inline-block;
@@ -336,7 +338,6 @@ export const FEEDBACK_HTML = `<!DOCTYPE html>
 <div class="container">
   <h1>TaskSync Feedback</h1>
   <div class="subtitle">Type your feedback below. Press <kbd>Cmd+Enter</kbd> to submit. <span class="connection-status" id="connection-status"><span class="connection-dot" id="connection-dot"></span> <span id="connection-label">Connecting...</span></span></div>
-  <div class="filepath">Feedback transport: FEEDBACK_PATH</div>
   <div class="filepath">ACTIVE_SESSION_INFO</div>
   <div id="wait-banner" class="wait-banner idle" role="status" aria-live="polite">Checking agent wait state...</div>
   <div class="layout">
@@ -379,7 +380,7 @@ export const FEEDBACK_HTML = `<!DOCTYPE html>
           <input id="active-session-input" placeholder="Session ID to set as default" />
           <button type="button" class="btn-secondary btn-small" onclick="setActiveFromInput()">Set Default</button>
           <button type="button" class="btn-secondary btn-small" onclick="loadSessions()">Refresh</button>
-          <button type="button" class="btn-secondary btn-small" onclick="pruneStaleSessions()" title="Remove sessions inactive for over 1 hour">Prune Stale</button>
+          <button type="button" class="btn-secondary btn-small" onclick="pruneStaleSessions()" id="prune-stale-btn" title="Remove sessions inactive for over 1 hour">Prune Stale</button>
         </div>
         <label for="session-filter" class="sr-only" style="position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);border:0;">Filter sessions</label>
         <input id="session-filter" class="session-filter" placeholder="Filter sessions..." type="search" />
@@ -452,6 +453,22 @@ export const FEEDBACK_HTML = `<!DOCTYPE html>
   const previousWaitBySession = new Map();
   let audioContext = null;
   let audioUnlocked = false;
+
+  // ── Wait timer state ──
+  let waitTimerInterval = null;
+  let currentWaitStartedAt = null;
+
+  function formatElapsed(isoStart) {
+    const ms = Date.now() - new Date(isoStart).getTime();
+    if (ms < 0) return '0s';
+    const totalSec = Math.floor(ms / 1000);
+    const h = Math.floor(totalSec / 3600);
+    const m = Math.floor((totalSec % 3600) / 60);
+    const s = totalSec % 60;
+    if (h > 0) return h + 'h ' + m + 'm ' + s + 's';
+    if (m > 0) return m + 'm ' + s + 's';
+    return s + 's';
+  }
 
   // ── Last known sessions for filter re-rendering ──
   let lastSessionsData = null;
@@ -778,14 +795,27 @@ export const FEEDBACK_HTML = `<!DOCTYPE html>
     const isStale = s.lastActivityAt && (Date.now() - new Date(s.lastActivityAt).getTime()) > staleThreshold;
     const staleFlag = isStale ? '<span class="flag flag-stale" title="No activity for over 1 hour">stale</span>' : '';
     const sessionUrl = s.sessionUrl || ('/session/' + encodeURIComponent(s.sessionId));
-    return '<li class="session-item ' + (isActive ? 'active ' : '') + (hasAlert ? 'alert' : '') + '">'
+    const metaCreated = s.createdAt ? formatTimeShort(new Date(s.createdAt)) : '';
+    const metaActivity = s.lastActivityAt ? formatElapsed(s.lastActivityAt) + ' ago' : '';
+    const metaWait = (s.waitingForFeedback && s.waitStartedAt) ? formatElapsed(s.waitStartedAt) : '';
+    const metaParts = [];
+    if (metaCreated) metaParts.push('Created ' + metaCreated);
+    if (metaActivity) metaParts.push('Active ' + metaActivity);
+    if (metaWait) metaParts.push('Waiting ' + metaWait);
+    const metaLine = metaParts.length > 0
+      ? '<div class="session-meta">' + metaParts.join(' · ') + '</div>'
+      : '';
+    return '<li class="session-item ' + (isActive ? 'active ' : '') + (isStale ? 'stale ' : '') + (hasAlert ? 'alert' : '') + '">'
       + '<div class="session-name">' + escapeHtml(displayName) + '</div>'
       + (alias ? ('<div class="session-id">' + escapeHtml(s.sessionId) + '</div>') : '')
       + '<div class="session-flags">' + waitingFlag + queueFlag + routeFlag + staleFlag + (hasAlert ? ' <span class="session-alert-badge">new wait</span>' : '') + '</div>'
+      + metaLine
       + '<a class="session-link" href="' + sessionUrl + '" target="_blank" rel="noopener">Open in new window</a>'
       + '<div class="session-buttons">'
       + '<button type="button" class="btn-secondary btn-small" data-action="rename" data-session-id="' + escapeHtml(s.sessionId) + '" data-session-alias="' + escapeHtml(alias) + '">Rename</button>'
-      + '<button type="button" class="btn-secondary btn-small" data-action="route" data-session-id="' + escapeHtml(s.sessionId) + '">Route Here</button>'
+      + (isRoute
+        ? '<button type="button" class="btn-secondary btn-small" disabled title="Already the active route target">Current</button>'
+        : '<button type="button" class="btn-secondary btn-small" data-action="route" data-session-id="' + escapeHtml(s.sessionId) + '">Route Here</button>')
       + '<button type="button" class="btn-secondary btn-small" data-action="set-default" data-session-id="' + escapeHtml(s.sessionId) + '">Set Default</button>'
       + '<button type="button" class="btn-danger btn-small" data-action="disconnect" data-session-id="' + escapeHtml(s.sessionId) + '">Disconnect</button>'
       + '</div>'
@@ -796,14 +826,25 @@ export const FEEDBACK_HTML = `<!DOCTYPE html>
     const filterText = sessionFilterEl.value.trim();
     if (sessions.length === 0) {
       sessionListEl.innerHTML = '<li class="empty-state"><div class="empty-state-icon">&#128268;</div>No active streamable sessions</li>';
+      updatePruneButton(0);
       return;
     }
+    const staleThreshold = 60 * 60 * 1000;
+    const staleCount = sessions.filter(function(s) { return s.lastActivityAt && (Date.now() - new Date(s.lastActivityAt).getTime()) > staleThreshold; }).length;
+    updatePruneButton(staleCount);
     const html = sessions.map((s) => renderSessionItem(s, active, filterText)).filter(Boolean).join('');
     if (!html) {
       sessionListEl.innerHTML = '<li class="empty-state">No sessions match filter</li>';
       return;
     }
     sessionListEl.innerHTML = html;
+  }
+
+  function updatePruneButton(staleCount) {
+    const btn = document.getElementById('prune-stale-btn');
+    if (!btn) return;
+    btn.textContent = staleCount > 0 ? 'Prune Stale (' + staleCount + ')' : 'Prune Stale';
+    btn.disabled = staleCount === 0;
   }
 
   function detectNotificationTransitions(sessions, targetSessionId) {
@@ -833,11 +874,21 @@ export const FEEDBACK_HTML = `<!DOCTYPE html>
     const targetSession = sessions.find((s) => s.sessionId === targetSessionId);
     const targetWaiting = Boolean(targetSession && targetSession.waitingForFeedback);
     const anyWaiting = waitingSessions.length > 0;
-    const firstWaitingSessionId = waitingSessions[0]?.sessionId || '(none)';
+    const firstWaitingSession = waitingSessions[0] || null;
+
+    // Stop existing timer — will restart if still needed
+    if (waitTimerInterval) { clearInterval(waitTimerInterval); waitTimerInterval = null; }
 
     if (targetWaiting) {
+      const startedAt = targetSession.waitStartedAt;
+      currentWaitStartedAt = startedAt;
+      const renderText = function() {
+        const elapsed = startedAt ? ' (' + formatElapsed(startedAt) + ')' : '';
+        waitBannerEl.textContent = 'Agent waiting for feedback' + elapsed;
+      };
       waitBannerEl.className = 'wait-banner waiting';
-      waitBannerEl.textContent = 'Agent is waiting for feedback on session: ' + targetSessionId;
+      renderText();
+      if (startedAt) waitTimerInterval = setInterval(renderText, 1000);
       textbox.classList.add('waiting');
       document.title = 'TaskSync - Agent Waiting';
       const signature = targetSessionId + ':waiting';
@@ -846,8 +897,15 @@ export const FEEDBACK_HTML = `<!DOCTYPE html>
         lastWaitSignature = signature;
       }
     } else if (anyWaiting) {
+      const startedAt = firstWaitingSession.waitStartedAt;
+      currentWaitStartedAt = startedAt;
+      const renderText = function() {
+        const elapsed = startedAt ? ' (' + formatElapsed(startedAt) + ')' : '';
+        waitBannerEl.textContent = 'A different session is waiting' + elapsed + ': ' + firstWaitingSession.sessionId + '. Use Route Here to focus it.';
+      };
       waitBannerEl.className = 'wait-banner waiting';
-      waitBannerEl.textContent = 'A different session is waiting for feedback: ' + firstWaitingSessionId + '. Use Route Here to focus it.';
+      renderText();
+      if (startedAt) waitTimerInterval = setInterval(renderText, 1000);
       textbox.classList.remove('waiting');
       document.title = 'TaskSync - Session Waiting';
     } else {
@@ -856,6 +914,7 @@ export const FEEDBACK_HTML = `<!DOCTYPE html>
       textbox.classList.remove('waiting');
       document.title = 'TaskSync Feedback';
       lastWaitSignature = 'idle';
+      currentWaitStartedAt = null;
     }
   }
 

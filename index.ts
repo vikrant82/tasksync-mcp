@@ -38,6 +38,8 @@ const logFilePath = process.env.TASKSYNC_LOG_FILE?.trim() || "";
 const DEFAULT_FEEDBACK_SESSION = "__default__";
 const STREAM_RETRY_INTERVAL_MS = 2000;
 const KEEPALIVE_INTERVAL_MS = 30000; // 30s SSE comment keepalive to prevent HTTP connection timeout
+const AUTO_PRUNE_INTERVAL_MS = 5 * 60 * 1000; // check for auto-prune every 5 minutes
+const AUTO_PRUNE_STALE_THRESHOLD_MS = 4 * 60 * 60 * 1000; // auto-prune sessions inactive for >4 hours
 const DEBUG_BODY_MAX_CHARS = 2000; // truncate debug-logged bodies to this length
 
 type FeedbackChannelState = {
@@ -280,6 +282,7 @@ function buildUiStatePayload(targetSessionId?: string) {
       createdAt: entry.createdAt,
       lastActivityAt: entry.lastActivityAt,
       waitingForFeedback: Boolean(state.pendingWaiter),
+      waitStartedAt: state.pendingWaiter?.startedAt || null,
       hasQueuedFeedback: Boolean(state.queuedFeedback),
     };
   });
@@ -565,6 +568,12 @@ function inferAliasFromInitializeBody(body: unknown): string {
   return version ? `${name} ${version}` : name;
 }
 
+/** Converts an inferred client alias (e.g., "opencode 1.2.24") into a short, URL-safe session ID prefix (e.g., "opencode"). */
+function slugifyForSessionId(clientAlias: string): string {
+  const namePart = clientAlias.split(/\s+/)[0] || "session";
+  return namePart.toLowerCase().replace(/[^a-z0-9-]/g, "-").replace(/-+/g, "-").replace(/^-|-$/g, "") || "session";
+}
+
 async function resolvePendingFeedback(content: string, rawSessionId?: string): Promise<boolean> {
   const sessionId = getSessionId(rawSessionId);
   const state = getFeedbackState(sessionId);
@@ -814,7 +823,7 @@ function registerServerHandlers(targetServer: Server) {
           }
 
           clearKeepalive("feedback_received");
-          logEvent("info", "feedback.return.live", {
+          logEvent("debug", "feedback.return.live", {
             sessionId,
             requestId,
             waitId,
@@ -865,7 +874,6 @@ function startFeedbackUI() {
     const activeAlias = getSessionAlias(activeUiSessionId);
     const activeLabel = activeAlias ? `${activeAlias} (${activeUiSessionId})` : activeUiSessionId;
     return FEEDBACK_HTML
-      .replace("FEEDBACK_PATH", "persisted feedback queue + replayable stream history")
       .replace("ACTIVE_SESSION_INFO", `Active session: ${activeLabel} | Known sessions: ${streamableSessions.size}`);
   }
 
@@ -1053,6 +1061,27 @@ function startFeedbackUI() {
     console.error(`Feedback UI running at http://localhost:${uiPort}`);
   });
 
+  // Auto-prune very old stale sessions periodically
+  setInterval(() => {
+    const now = Date.now();
+    let pruned = 0;
+    for (const [sessionId, state] of feedbackStateBySession.entries()) {
+      const meta = sessionStateStore.getSnapshot().sessionMetadataById[sessionId];
+      const lastActivity = meta?.lastActivityAt ? new Date(meta.lastActivityAt).getTime() : 0;
+      const isWaiting = Boolean(state.pendingWaiter);
+      if (!isWaiting && lastActivity > 0 && (now - lastActivity) > AUTO_PRUNE_STALE_THRESHOLD_MS) {
+        feedbackStateBySession.delete(sessionId);
+        streamableSessions.delete(sessionId);
+        sessionStateStore.deleteSession(sessionId);
+        pruned++;
+        logEvent("info", "session.auto-pruned", { sessionId, inactiveMs: now - lastActivity });
+      }
+    }
+    if (pruned > 0) {
+      broadcastUiState();
+    }
+  }, AUTO_PRUNE_INTERVAL_MS);
+
   setTimeout(() => {
     const url = `http://localhost:${uiPort}`;
     if (process.platform === "linux") {
@@ -1153,10 +1182,11 @@ async function runStreamableHTTPServer() {
         const inferredAlias = inferAliasFromInitializeBody(req.body);
         const clientAlias = inferredAlias || "unknown-client";
         const clientGeneration = await nextClientGeneration(clientAlias);
+        const sessionSlug = slugifyForSessionId(clientAlias);
         const transportId = randomUUID();
         let createdTransport: StreamableHTTPServerTransport;
         createdTransport = new StreamableHTTPServerTransport({
-          sessionIdGenerator: () => randomUUID(),
+          sessionIdGenerator: () => `${sessionSlug}-${clientGeneration}`,
           eventStore: streamEventStore as never,
           retryInterval: STREAM_RETRY_INTERVAL_MS,
           onsessioninitialized: (initializedSessionId) => {
