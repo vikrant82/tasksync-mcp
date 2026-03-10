@@ -20,7 +20,11 @@ Updated 2026-03-10.
 - `session-state-store.ts`: file-backed metadata in `.tasksync/session-state.json`
   - latest/queued feedback, bounded feedback history, session metadata, alias metadata, active UI session
 - `stream-event-store.ts`: transient in-memory event store for short-lived replay
+- Session IDs: `{client-slug}-{generation}` format (e.g., `opencode-1`, `copilot-3`)
+  - `slugifyForSessionId()` extracts tool name from alias, lowercases, strips version/special chars
+  - `nextClientGeneration()` provides monotonic counter per alias, persisted to disk
 - Session close: stream close clears waiter + logs; DELETE fully removes state
+- Auto-prune: `setInterval` every 5 min removes sessions inactive >4h (not waiting)
 
 ## Feedback Flow
 - `get_feedback` waiter ownership tracked per raw HTTP request via request-scoped IDs
@@ -38,3 +42,6 @@ Updated 2026-03-10.
 ## UI State
 - SSE push from `/events`; broadcasts on session and waiter lifecycle transitions
 - Target session resolution: requested → active UI → first live → default constant
+- Wait banner: live elapsed timer via `setInterval(1s)` using `waitStartedAt` from payload
+- Session list: metadata line (created time, active ago, waiting duration), stale visual dimming
+- Prune button shows stale count, auto-disabled when 0
