@@ -1154,6 +1154,7 @@ async function runStreamableHTTPServer() {
       const rawSessionId = req.headers["mcp-session-id"];
       const sessionId = typeof rawSessionId === "string" ? rawSessionId : undefined;
       let entry: StreamableSessionEntry | undefined;
+      let resurrectionSessionId: string | undefined;
 
       if (sessionId) {
         entry = streamableSessions.get(sessionId);
@@ -1164,24 +1165,50 @@ async function runStreamableHTTPServer() {
             return;
           }
 
-          logEvent("warn", "mcp.session.invalid", { sessionId, method: req.method });
-          res.status(404).json({
-            jsonrpc: "2.0",
-            error: { code: -32000, message: "Bad Request: Invalid session ID" },
-            id: null,
+          // Check for session resurrection: known old session ID + initialize request
+          const persistedMeta = sessionStateStore.getSnapshot().sessionMetadataById[sessionId];
+          if (req.method === "POST" && isInitializeRequest(req.body) && persistedMeta) {
+            resurrectionSessionId = sessionId;
+            logEvent("info", "mcp.session.resurrecting", {
+              sessionId,
+              clientAlias: persistedMeta.clientAlias,
+              originalCreatedAt: persistedMeta.createdAt,
+            });
+            // Fall through to session creation below
+          } else if (req.method === "GET" && persistedMeta) {
+            // SSE reconnection for a session pending resurrection.
+            // Return 503 instead of 404 so the client retries WITHOUT clearing its session ID.
+            // (The MCP SDK clears sessionId on 404, preventing header-based resurrection.)
+            logEvent("info", "mcp.session.sse.pending_resurrection", { sessionId });
+            res.status(503).setHeader("Retry-After", "2").json({
+              jsonrpc: "2.0",
+              error: { code: -32000, message: "Session is restarting, please retry" },
+              id: null,
+            });
+            return;
+          } else {
+            logEvent("warn", "mcp.session.invalid", { sessionId, method: req.method });
+            res.status(404).json({
+              jsonrpc: "2.0",
+              error: { code: -32000, message: "Bad Request: Invalid session ID" },
+              id: null,
+            });
+            return;
+          }
+        } else {
+          entry.lastActivityAt = new Date().toISOString();
+          logEvent("debug", "mcp.session.reused", {
+            sessionId,
+            method: req.method,
+            transportId: entry.transportId,
+            clientAlias: entry.clientAlias || undefined,
+            clientGeneration: entry.clientGeneration ?? undefined,
           });
-          return;
         }
-        entry.lastActivityAt = new Date().toISOString();
-        logEvent("debug", "mcp.session.reused", {
-          sessionId,
-          method: req.method,
-          transportId: entry.transportId,
-          clientAlias: entry.clientAlias || undefined,
-          clientGeneration: entry.clientGeneration ?? undefined,
-        });
-      } else {
-        if (req.method !== "POST" || !isInitializeRequest(req.body)) {
+      }
+
+      if (!entry) {
+        if (!resurrectionSessionId && (req.method !== "POST" || !isInitializeRequest(req.body))) {
           logEvent("warn", "mcp.session.missing", { method: req.method });
           res.status(400).json({
             jsonrpc: "2.0",
@@ -1194,12 +1221,47 @@ async function runStreamableHTTPServer() {
         const sessionServer = createSessionServer();
         const inferredAlias = inferAliasFromInitializeBody(req.body);
         const clientAlias = inferredAlias || "unknown-client";
-        const clientGeneration = await nextClientGeneration(clientAlias);
-        const sessionSlug = slugifyForSessionId(clientAlias);
         const transportId = randomUUID();
+
+        // Alias-based resurrection: find most recent orphaned session for this client
+        if (!resurrectionSessionId && clientAlias !== "unknown-client") {
+          const snapshot = sessionStateStore.getSnapshot();
+          let bestCandidate: { sessionId: string; lastActivityAt: number } | undefined;
+          for (const [sid, meta] of Object.entries(snapshot.sessionMetadataById)) {
+            if (streamableSessions.has(sid)) continue; // still live, skip
+            if (meta.clientAlias !== clientAlias) continue; // different client type
+            const lastActivity = meta.lastActivityAt ? new Date(meta.lastActivityAt).getTime() : 0;
+            if (!bestCandidate || lastActivity > bestCandidate.lastActivityAt) {
+              bestCandidate = { sessionId: sid, lastActivityAt: lastActivity };
+            }
+          }
+          if (bestCandidate) {
+            resurrectionSessionId = bestCandidate.sessionId;
+            logEvent("info", "mcp.session.resurrecting.by_alias", {
+              sessionId: resurrectionSessionId,
+              clientAlias,
+              lastActivityAt: new Date(bestCandidate.lastActivityAt).toISOString(),
+            });
+          }
+        }
+
+        let effectiveGeneration: number;
+        let sessionIdGeneratorFn: () => string;
+
+        if (resurrectionSessionId) {
+          // Resurrection: reuse old session ID, don't increment generation counter
+          const oldMeta = sessionStateStore.getSnapshot().sessionMetadataById[resurrectionSessionId];
+          effectiveGeneration = oldMeta?.clientGeneration ?? 0;
+          sessionIdGeneratorFn = () => resurrectionSessionId!;
+        } else {
+          effectiveGeneration = await nextClientGeneration(clientAlias);
+          const sessionSlug = slugifyForSessionId(clientAlias);
+          sessionIdGeneratorFn = () => `${sessionSlug}-${effectiveGeneration}`;
+        }
+
         let createdTransport: StreamableHTTPServerTransport;
         createdTransport = new StreamableHTTPServerTransport({
-          sessionIdGenerator: () => `${sessionSlug}-${clientGeneration}`,
+          sessionIdGenerator: sessionIdGeneratorFn,
           eventStore: streamEventStore as never,
           retryInterval: STREAM_RETRY_INTERVAL_MS,
           onsessioninitialized: (initializedSessionId) => {
@@ -1212,25 +1274,42 @@ async function runStreamableHTTPServer() {
               server: sessionServer,
               transportId,
               clientAlias,
-              clientGeneration,
+              clientGeneration: effectiveGeneration,
               createdAt: new Date().toISOString(),
               lastActivityAt: new Date().toISOString(),
             };
             streamableSessions.set(initializedSessionId, sessionEntry);
             broadcastUiState(initializedSessionId);
-            persistAsync("session.persistence.created", (async () => {
-              await persistSessionMetadata(initializedSessionId, sessionEntry);
-              await persistFeedbackState(initializedSessionId);
-              await reassociatePersistedStateForAlias(initializedSessionId, clientAlias);
-            })());
-            logEvent("info", "mcp.session.created", {
-              sessionId: initializedSessionId,
-              transportId,
-              clientAlias,
-              clientGeneration,
-              inferredAlias: inferredAlias || undefined,
-              activeSessions: streamableSessions.size,
-            });
+
+            if (resurrectionSessionId) {
+              // Resurrection: update metadata but skip reassociation (state is already in place)
+              persistAsync("session.persistence.resurrected", (async () => {
+                await persistSessionMetadata(initializedSessionId, sessionEntry);
+                await persistFeedbackState(initializedSessionId);
+              })());
+              logEvent("info", "mcp.session.resurrected", {
+                sessionId: initializedSessionId,
+                transportId,
+                clientAlias,
+                clientGeneration: effectiveGeneration,
+                inferredAlias: inferredAlias || undefined,
+                activeSessions: streamableSessions.size,
+              });
+            } else {
+              persistAsync("session.persistence.created", (async () => {
+                await persistSessionMetadata(initializedSessionId, sessionEntry);
+                await persistFeedbackState(initializedSessionId);
+                await reassociatePersistedStateForAlias(initializedSessionId, clientAlias);
+              })());
+              logEvent("info", "mcp.session.created", {
+                sessionId: initializedSessionId,
+                transportId,
+                clientAlias,
+                clientGeneration: effectiveGeneration,
+                inferredAlias: inferredAlias || undefined,
+                activeSessions: streamableSessions.size,
+              });
+            }
           },
         });
 
@@ -1246,7 +1325,7 @@ async function runStreamableHTTPServer() {
             sessionId: closedSessionId,
             transportId: closedEntry?.transportId ?? transportId,
             clientAlias: closedEntry?.clientAlias || clientAlias,
-            clientGeneration: closedEntry?.clientGeneration ?? clientGeneration,
+            clientGeneration: closedEntry?.clientGeneration ?? effectiveGeneration,
             activeSessions: streamableSessions.size,
           });
         };
@@ -1257,7 +1336,7 @@ async function runStreamableHTTPServer() {
           server: sessionServer,
           transportId,
           clientAlias,
-          clientGeneration,
+          clientGeneration: effectiveGeneration,
           createdAt: new Date().toISOString(),
           lastActivityAt: new Date().toISOString(),
         };
