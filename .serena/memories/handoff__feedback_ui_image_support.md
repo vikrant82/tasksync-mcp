@@ -6,7 +6,7 @@ This workstream is now focused on two things: (1) preserving and eventually comm
 The active code work in the repository is now the feedback UI. During this session, the feedback UI was improved and refactored substantially but not yet committed. The UI now has toast notifications instead of the old inline status style, busy/sending states for send/clear, lightweight safe markdown rendering in history, textarea auto-resize, and a fix for the Route Here title/header drift bug so the active-session summary updates immediately without page refresh and stays synced through SSE updates. The large embedded `feedback-html.ts` file was also split logically so that high-churn style and script pieces moved into helper modules while preserving the single `FEEDBACK_HTML` contract used by `index.ts` and `feedback-server.ts`.
 
 Immediate Goal
-Next session should start from the uncommitted feedback UI state: review/stage/commit the current UX/refactor changes, or continue with the next UX item if desired. In parallel or afterward, choose the concrete MCP tool/workflow that should emit images back to the agent and implement standard `ImageContent` tool results.
+The feedback UI refactor work is now committed and pushed. Next session/work step should focus on choosing the concrete MCP tool or workflow that should emit images back to the agent, then implementing standard `ImageContent` tool results without losing the current UI checkpoint.
 
 Completed
 - Closed the resurrection workstream conceptually and practically.
@@ -65,9 +65,10 @@ Resume from the current uncommitted feedback UI refactor state. First check `git
 Raw artifacts
 - Resurrection is abandoned; see `knowledge__session_resurrection.md` for the postmortem.
 - Rollback/cleanup already pushed earlier; last cleanup commit on `main`: `6e4feba` (`fix: align stale session responses with MCP 404 semantics`).
-- Current git state for the active UI workstream:
-  - modified tracked file: `feedback-html.ts`
-  - untracked new files: `feedback-html-enhanced-styles.ts`, `feedback-html-composer-history-script.ts`, `feedback-html-history-markdown-script.ts`
+- Pushed UI checkpoint commits:
+  - `3582401` — `feat: improve feedback UI workflow`
+  - `e6e0950` — `chore: ignore pnpm lockfile`
+- Current git state: clean working tree on `main`, synced with `origin/main` after push
 - MCP image protocol facts:
   - `ImageContent`: `type: 'image'`, base64 `data`, `mimeType`, optional `annotations`, optional `_meta`
   - `CallToolResult`: `content: ContentBlock[]`, optional `structuredContent`, optional `isError`
