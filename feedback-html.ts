@@ -5,6 +5,9 @@
  * The placeholder ACTIVE_SESSION_INFO is replaced at serve time with the current session label.
  */
 
+import { FEEDBACK_HTML_ENHANCED_STYLES } from "./feedback-html-enhanced-styles.js";
+import { FEEDBACK_HTML_COMPOSER_HISTORY_SCRIPT } from "./feedback-html-composer-history-script.js";
+
 export const FEEDBACK_HTML = `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -163,6 +166,7 @@ export const FEEDBACK_HTML = `<!DOCTYPE html>
   textarea {
     width: 100%;
     min-height: 200px;
+    max-height: 55vh;
     padding: 0.75rem;
     background: var(--bg-surface);
     color: var(--fg);
@@ -170,7 +174,8 @@ export const FEEDBACK_HTML = `<!DOCTYPE html>
     border-radius: var(--radius);
     font-family: 'SF Mono', Monaco, 'Cascadia Code', monospace;
     font-size: 0.9rem;
-    resize: vertical;
+    resize: none;
+    overflow-y: hidden;
     outline: none;
     transition: border-color var(--transition-fast), box-shadow var(--transition-fast);
   }
@@ -191,35 +196,27 @@ export const FEEDBACK_HTML = `<!DOCTYPE html>
   :root:not([data-theme="light"]) .btn-primary { color: #000; }
   .btn-secondary { background: var(--border); color: var(--fg); }
   :root[data-theme="light"] .btn-secondary { background: #e1e4e8; }
-  .status {
-    margin-top: 0.75rem;
-    padding: 0.5rem 0.75rem;
-    border-radius: var(--radius);
-    font-size: 0.85rem;
-    display: none;
-    transition: opacity var(--transition-fast);
+  button:disabled { cursor: progress; opacity: 0.75; }
+  .btn-busy {
+    position: relative;
+    pointer-events: none;
   }
-  .status.success { display: block; background: var(--success-subtle); color: var(--success); border: 1px solid rgba(63,185,80,0.3); }
-  :root[data-theme="light"] .status.success { border-color: rgba(26,127,55,0.3); }
-  .status.error { display: block; background: var(--danger-subtle); color: var(--danger); border: 1px solid rgba(248,81,73,0.3); }
-  :root[data-theme="light"] .status.error { border-color: rgba(207,34,46,0.3); }
-  .history-list { display: flex; flex-direction: column; gap: 0.6rem; }
-  .history-panel-header { display: flex; align-items: center; justify-content: space-between; gap: 0.75rem; margin-bottom: 0.5rem; }
-  .history-summary { font-size: 0.78rem; color: var(--fg-muted); }
-  .history-scroll { max-height: 360px; overflow-y: auto; padding-right: 0.2rem; }
-  .history-scroll.collapsed { display: none; }
-  .history-controls { display: inline-flex; align-items: center; gap: 0.45rem; }
-  .history-jump.hidden { display: none; }
-  .history-item {
-    border: 1px solid var(--border);
-    border-radius: var(--radius);
-    padding: 0.75rem;
-    background: rgba(255,255,255,0.02);
-    transition: background var(--transition-fast), border-color var(--transition-fast);
+  .btn-busy::after {
+    content: '';
+    display: inline-block;
+    width: 0.8rem;
+    height: 0.8rem;
+    margin-left: 0.45rem;
+    border-radius: 999px;
+    border: 2px solid currentColor;
+    border-right-color: transparent;
+    vertical-align: -0.1rem;
+    animation: spin 0.8s linear infinite;
   }
-  :root[data-theme="light"] .history-item { background: var(--bg); }
-  .history-meta { font-size: 0.74rem; color: var(--fg-muted); margin-bottom: 0.35rem; }
-  .history-content { white-space: pre-wrap; word-break: break-word; font-size: 0.84rem; }
+  @keyframes spin {
+    to { transform: rotate(360deg); }
+  }
+${FEEDBACK_HTML_ENHANCED_STYLES}
   .filepath { color: var(--fg-muted); font-size: 0.75rem; margin-bottom: 1rem; font-family: monospace; }
   kbd { background: var(--border); padding: 0.1rem 0.4rem; border-radius: 3px; font-size: 0.8rem; }
 
@@ -339,7 +336,7 @@ export const FEEDBACK_HTML = `<!DOCTYPE html>
 <div class="container">
   <h1>TaskSync Feedback</h1>
   <div class="subtitle">Type your feedback below. Press <kbd>Cmd+Enter</kbd> to submit. <span class="connection-status" id="connection-status"><span class="connection-dot" id="connection-dot"></span> <span id="connection-label">Connecting...</span></span></div>
-  <div class="filepath">ACTIVE_SESSION_INFO</div>
+  <div id="active-session-summary" class="filepath">ACTIVE_SESSION_INFO</div>
   <div id="wait-banner" class="wait-banner idle" role="status" aria-live="polite">Checking agent wait state...</div>
   <div class="layout">
     <div class="main-column">
@@ -350,8 +347,8 @@ export const FEEDBACK_HTML = `<!DOCTYPE html>
           <textarea id="feedback" class="feedback-box" placeholder="Type your feedback here..." autofocus aria-describedby="keyboard-hint"></textarea>
           <span id="keyboard-hint" style="position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);border:0;">Press Cmd+Enter or Ctrl+Enter to submit, Escape to blur</span>
           <div class="actions">
-            <button type="submit" class="btn-primary">Send Feedback</button>
-            <button type="button" class="btn-secondary" onclick="clearFeedback()">Clear Draft</button>
+            <button type="submit" id="send-button" class="btn-primary">Send Feedback</button>
+            <button type="button" id="clear-button" class="btn-secondary" onclick="clearFeedback()">Clear Draft</button>
           </div>
         </form>
         <div id="status" class="status" role="status" aria-live="polite"></div>
@@ -406,17 +403,22 @@ export const FEEDBACK_HTML = `<!DOCTYPE html>
     </div>
   </div>
 </div>
+<div id="toast-viewport" class="toast-viewport" aria-live="polite" aria-atomic="false"></div>
 <script>
   // ── DOM references ──
   const form = document.getElementById('form');
   const textbox = document.getElementById('feedback');
   const statusEl = document.getElementById('status');
+  const toastViewportEl = document.getElementById('toast-viewport');
+  const sendButtonEl = document.getElementById('send-button');
+  const clearButtonEl = document.getElementById('clear-button');
   const historyListEl = document.getElementById('history-list');
   const historyScrollEl = document.getElementById('history-scroll');
   const historySummaryEl = document.getElementById('history-summary');
   const historyJumpEl = document.getElementById('history-jump');
   const historyToggleEl = document.getElementById('history-toggle');
   const waitBannerEl = document.getElementById('wait-banner');
+  const activeSessionSummaryEl = document.getElementById('active-session-summary');
   const sessionMetaEl = document.getElementById('session-meta');
   const sessionListEl = document.getElementById('session-list');
   const activeSessionInputEl = document.getElementById('active-session-input');
@@ -451,329 +453,7 @@ export const FEEDBACK_HTML = `<!DOCTYPE html>
   // ── Notification state ──
   let lastWaitSignature = '';
   const notifiedSessions = new Set();
-  const previousWaitBySession = new Map();
-  let audioContext = null;
-  let audioUnlocked = false;
-
-  // ── Wait timer state ──
-  let waitTimerInterval = null;
-  let currentWaitStartedAt = null;
-
-   function formatElapsed(isoStart) {
-     const ms = Date.now() - new Date(isoStart).getTime();
-     if (ms < 0) return '0s';
-     const totalSec = Math.floor(ms / 1000);
-     const h = Math.floor(totalSec / 3600);
-     const m = Math.floor((totalSec % 3600) / 60);
-     const s = totalSec % 60;
-     if (h > 0) return h + 'h ' + m + 'm ' + s + 's';
-     if (m > 0) return m + 'm ' + s + 's';
-     return s + 's';
-   }
-
-   function formatTimeShort(date) {
-     const h = date.getHours();
-     const m = String(date.getMinutes()).padStart(2, '0');
-     const ampm = h >= 12 ? 'PM' : 'AM';
-     const h12 = h % 12 || 12;
-     return h12 + ':' + m + ' ' + ampm;
-   }
-
-  // ── Last known sessions for filter re-rendering ──
-  let lastSessionsData = null;
-  let lastActiveId = '(none)';
-
-  // ── Initialize settings from localStorage ──
-  notifySoundEl.checked = localStorage.getItem(STORAGE_NOTIFY_SOUND) !== '0';
-  notifyDesktopEl.checked = localStorage.getItem(STORAGE_NOTIFY_DESKTOP) === '1';
-  notifyModeEl.value = localStorage.getItem(STORAGE_NOTIFY_MODE) || 'focused';
-  let historyCollapsed = localStorage.getItem(STORAGE_HISTORY_COLLAPSED) === '1';
-
-  // ── Restore draft from localStorage ──
-  const savedDraft = localStorage.getItem(STORAGE_DRAFT);
-  if (savedDraft) {
-    textbox.value = savedDraft;
-  }
-
-  // ── Draft persistence on input ──
-  textbox.addEventListener('input', () => {
-    localStorage.setItem(STORAGE_DRAFT, textbox.value);
-  });
-
-  // ── Theme initialization ──
-  function applyTheme(theme) {
-    document.documentElement.setAttribute('data-theme', theme);
-    localStorage.setItem(STORAGE_THEME, theme);
-    if (theme === 'light') {
-      themeIconEl.textContent = '\\u2600';
-      themeLabelEl.textContent = 'Dark';
-    } else {
-      themeIconEl.textContent = '\\u263e';
-      themeLabelEl.textContent = 'Light';
-    }
-  }
-
-  function getPreferredTheme() {
-    const stored = localStorage.getItem(STORAGE_THEME);
-    if (stored) return stored;
-    return window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
-  }
-
-  applyTheme(getPreferredTheme());
-
-  themeToggleEl.addEventListener('click', () => {
-    const current = document.documentElement.getAttribute('data-theme') || 'dark';
-    applyTheme(current === 'dark' ? 'light' : 'dark');
-  });
-
-  // ── Settings change handlers ──
-  notifySoundEl.addEventListener('change', () => {
-    localStorage.setItem(STORAGE_NOTIFY_SOUND, notifySoundEl.checked ? '1' : '0');
-    if (notifySoundEl.checked) {
-      unlockAudioContext();
-    }
-  });
-
-  notifyDesktopEl.addEventListener('change', async () => {
-    if (notifyDesktopEl.checked) {
-      const granted = await ensureDesktopPermission();
-      if (!granted) {
-        notifyDesktopEl.checked = false;
-      }
-    }
-    localStorage.setItem(STORAGE_NOTIFY_DESKTOP, notifyDesktopEl.checked ? '1' : '0');
-  });
-
-  notifyModeEl.addEventListener('change', () => {
-    localStorage.setItem(STORAGE_NOTIFY_MODE, notifyModeEl.value || 'focused');
-  });
-
-  // ── History collapse controls ──
-  function updateHistoryCollapseUi() {
-    historyScrollEl.classList.toggle('collapsed', historyCollapsed);
-    historyToggleEl.textContent = historyCollapsed ? 'Expand' : 'Collapse';
-    historyToggleEl.setAttribute('aria-expanded', String(!historyCollapsed));
-  }
-
-  function isHistoryNearBottom() {
-    return (historyScrollEl.scrollHeight - historyScrollEl.scrollTop - historyScrollEl.clientHeight) < 32;
-  }
-
-  function scrollHistoryToBottom() {
-    historyScrollEl.scrollTop = historyScrollEl.scrollHeight;
-  }
-
-  function updateHistoryJumpVisibility() {
-    const hidden = historyCollapsed || isHistoryNearBottom();
-    historyJumpEl.classList.toggle('hidden', hidden);
-  }
-
-  historyToggleEl.addEventListener('click', () => {
-    historyCollapsed = !historyCollapsed;
-    localStorage.setItem(STORAGE_HISTORY_COLLAPSED, historyCollapsed ? '1' : '0');
-    updateHistoryCollapseUi();
-    updateHistoryJumpVisibility();
-  });
-
-  historyJumpEl.addEventListener('click', () => {
-    scrollHistoryToBottom();
-    updateHistoryJumpVisibility();
-  });
-
-  historyScrollEl.addEventListener('scroll', () => {
-    updateHistoryJumpVisibility();
-  });
-
-  updateHistoryCollapseUi();
-  updateHistoryJumpVisibility();
-
-  // ── Audio context management ──
-  function getAudioContext() {
-    if (audioContext) return audioContext;
-    const AudioContextCtor = window.AudioContext || window.webkitAudioContext;
-    if (!AudioContextCtor) return null;
-    try {
-      audioContext = new AudioContextCtor();
-      audioUnlocked = audioContext.state === 'running';
-      return audioContext;
-    } catch {
-      return null;
-    }
-  }
-
-  async function unlockAudioContext() {
-    const ctx = getAudioContext();
-    if (!ctx) return false;
-    if (ctx.state === 'suspended') {
-      try {
-        await ctx.resume();
-      } catch {
-        return false;
-      }
-    }
-    audioUnlocked = ctx.state === 'running';
-    return audioUnlocked;
-  }
-
-  async function ensureDesktopPermission() {
-    if (!('Notification' in window)) return false;
-    if (Notification.permission === 'granted') return true;
-    if (Notification.permission === 'denied') return false;
-    try {
-      const permission = await Notification.requestPermission();
-      return permission === 'granted';
-    } catch {
-      return false;
-    }
-  }
-
-  // Browser autoplay policies require a user gesture before WebAudio can play.
-  async function primeAlertsFromGesture() {
-    if (notifySoundEl.checked && !audioUnlocked) {
-      await unlockAudioContext();
-    }
-    if (notifyDesktopEl.checked && 'Notification' in window && Notification.permission === 'default') {
-      const granted = await ensureDesktopPermission();
-      if (!granted) {
-        notifyDesktopEl.checked = false;
-        localStorage.setItem(STORAGE_NOTIFY_DESKTOP, '0');
-      }
-    }
-  }
-
-  ['pointerdown', 'keydown', 'touchstart'].forEach((eventName) => {
-    window.addEventListener(eventName, primeAlertsFromGesture, { passive: true });
-  });
-
-  // ── Sound & desktop notification helpers ──
-  function playSoundAlert() {
-    if (!notifySoundEl.checked) return;
-    const ctx = getAudioContext();
-    if (!ctx || ctx.state !== 'running') return;
-    try {
-      const oscillator = ctx.createOscillator();
-      const gain = ctx.createGain();
-      oscillator.type = 'sine';
-      oscillator.frequency.value = 880;
-      gain.gain.value = 0.04;
-      oscillator.connect(gain);
-      gain.connect(ctx.destination);
-      oscillator.start();
-      oscillator.stop(ctx.currentTime + 0.14);
-    } catch {
-      // Ignore browser audio API failures.
-    }
-  }
-
-  function showDesktopAlert(sessionId) {
-    if (!notifyDesktopEl.checked) return;
-    if (!('Notification' in window) || Notification.permission !== 'granted') return;
-    try {
-      new Notification('TaskSync: Agent waiting', {
-        body: 'Session ' + sessionId + ' is waiting for feedback.',
-      });
-    } catch {
-      // Ignore notification failures.
-    }
-  }
-
-  function notifyWaitingTransition(sessionId) {
-    playSoundAlert();
-    showDesktopAlert(sessionId);
-  }
-
-  // ── URL management ──
-  function updateUrlSession(sessionId) {
-    const url = new URL(window.location.href);
-    if (sessionId) {
-      url.pathname = '/session/' + encodeURIComponent(sessionId);
-      url.searchParams.delete('sessionId');
-    } else {
-      url.pathname = '/';
-      url.searchParams.delete('sessionId');
-    }
-    window.history.replaceState({}, '', url.toString());
-  }
-
-  // ── Keyboard shortcuts ──
-  textbox.addEventListener('keydown', (e) => {
-    if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
-      e.preventDefault();
-      form.dispatchEvent(new Event('submit'));
-      return;
-    }
-    if (e.key === 'Escape') {
-      textbox.blur();
-    }
-  });
-
-  // ── Form submission ──
-  form.addEventListener('submit', async (e) => {
-    e.preventDefault();
-    const text = textbox.value.trim();
-    if (!text) return;
-    const explicitSessionId = selectedSessionId || activeSessionInputEl.value.trim();
-    try {
-      const res = await fetch('/feedback', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ content: text, sessionId: explicitSessionId || undefined })
-      });
-      if (res.ok) {
-        showStatus('Feedback sent!', 'success');
-        textbox.value = '';
-        localStorage.removeItem(STORAGE_DRAFT);
-      } else {
-        showStatus('Failed to send: ' + (await res.text()), 'error');
-      }
-    } catch (err) {
-      showStatus('Error: ' + err.message, 'error');
-    }
-  });
-
-  async function clearFeedback() {
-    const explicitSessionId = selectedSessionId || activeSessionInputEl.value.trim();
-    try {
-      await fetch('/feedback', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ content: '', sessionId: explicitSessionId || undefined })
-      });
-      textbox.value = '';
-      localStorage.removeItem(STORAGE_DRAFT);
-      showStatus('Feedback draft cleared', 'success');
-    } catch (err) {
-      showStatus('Error: ' + err.message, 'error');
-    }
-  }
-
-  // ── Shared rendering helpers (Phase 1: deduplication) ──
-  function escapeHtml(value) {
-    return String(value)
-      .replace(/&/g, '&amp;')
-      .replace(/</g, '&lt;')
-      .replace(/>/g, '&gt;')
-      .replace(/"/g, '&quot;')
-      .replace(/'/g, '&#39;');
-  }
-
-  function showStatus(msg, type) {
-    statusEl.textContent = msg;
-    statusEl.className = 'status ' + type;
-    setTimeout(() => { statusEl.className = 'status'; }, 3000);
-  }
-
-  function formatHistoryTimestamp(value) {
-    if (!value) return 'Unknown time';
-    const date = new Date(value);
-    if (Number.isNaN(date.getTime())) return 'Unknown time';
-    const now = new Date();
-    const sameDay = date.toDateString() === now.toDateString();
-    return sameDay
-      ? date.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })
-      : date.toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
-  }
-
+${FEEDBACK_HTML_COMPOSER_HISTORY_SCRIPT}
   function renderSessionItem(s, active, filterText) {
     const isActive = s.sessionId === active;
     const isRoute = s.sessionId === selectedSessionId;
@@ -937,6 +617,16 @@ export const FEEDBACK_HTML = `<!DOCTYPE html>
     activeSessionInputEl.value = selectedSessionId;
   }
 
+  function updateActiveSessionSummary(active, sessions) {
+    if (!activeSessionSummaryEl) return;
+    const list = Array.isArray(sessions) ? sessions : [];
+    const targetSessionId = selectedSessionId || active || '(none)';
+    const targetSession = list.find((session) => session.sessionId === targetSessionId);
+    const alias = targetSession && targetSession.alias ? targetSession.alias : '';
+    const displayLabel = alias ? (alias + ' (' + targetSessionId + ')') : targetSessionId;
+    activeSessionSummaryEl.textContent = 'Active session: ' + displayLabel + ' | Known sessions: ' + list.length;
+  }
+
   function updateSessionMeta(active, sessions) {
     const routeHint = selectedSessionId ? (' | Route: ' + selectedSessionId) : '';
     sessionMetaEl.textContent = 'Default (fallback): ' + active + routeHint + ' | Total sessions: ' + sessions.length;
@@ -967,6 +657,7 @@ export const FEEDBACK_HTML = `<!DOCTYPE html>
       lastActiveId = active;
 
       resolveSelectedSession(sessions, active, '');
+      updateActiveSessionSummary(active, sessions);
       updateSessionMeta(active, sessions);
 
       const targetSessionId = selectedSessionId || active;
@@ -1001,7 +692,10 @@ export const FEEDBACK_HTML = `<!DOCTYPE html>
 
       activeSessionInputEl.value = sessionId;
       selectedSessionId = sessionId;
+      lastActiveId = sessionId;
       notifiedSessions.delete(sessionId);
+      updateActiveSessionSummary(lastActiveId, lastSessionsData || []);
+      updateSessionMeta(lastActiveId, lastSessionsData || []);
       updateUrlSession(sessionId);
       connectEvents();
       showStatus('Default session updated', 'success');
@@ -1025,6 +719,8 @@ export const FEEDBACK_HTML = `<!DOCTYPE html>
       if (selectedSessionId === sessionId) {
         selectedSessionId = '';
         activeSessionInputEl.value = '';
+        updateActiveSessionSummary(lastActiveId, lastSessionsData || []);
+        updateSessionMeta(lastActiveId, lastSessionsData || []);
         updateUrlSession('');
       }
       connectEvents();
@@ -1140,6 +836,8 @@ export const FEEDBACK_HTML = `<!DOCTYPE html>
     selectedSessionId = sessionId;
     activeSessionInputEl.value = sessionId;
     notifiedSessions.delete(sessionId);
+    updateActiveSessionSummary(lastActiveId, lastSessionsData || []);
+    updateSessionMeta(lastActiveId, lastSessionsData || []);
     updateUrlSession(sessionId);
     connectEvents();
     showStatus('Routing feedback to selected session', 'success');
@@ -1211,7 +909,7 @@ export const FEEDBACK_HTML = `<!DOCTYPE html>
       const label = formatHistoryTimestamp(createdAt);
       return '<div class="history-item">'
         + '<div class="history-meta">You \\u2022 ' + escapeHtml(label) + '</div>'
-        + '<div class="history-content">' + escapeHtml(content) + '</div>'
+        + '<div class="history-content">' + renderMarkdownContent(content) + '</div>'
         + '</div>';
     }).join('');
 
@@ -1236,6 +934,7 @@ export const FEEDBACK_HTML = `<!DOCTYPE html>
     lastActiveId = active;
 
     resolveSelectedSession(sessions, active, payload.sessionId || '');
+    updateActiveSessionSummary(active, sessions);
     const history = Array.isArray(payload.history) ? payload.history : [];
     renderHistory(history);
     updateSessionMeta(active, sessions);
