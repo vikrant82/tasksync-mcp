@@ -96,3 +96,4 @@ public
 tmp/
 temp/
 .tasksync/session-state.json
+pnpm-lock.yaml
