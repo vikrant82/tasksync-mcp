@@ -55,7 +55,11 @@ export const FEEDBACK_HTML_COMPOSER_HISTORY_SCRIPT = `
   function autoResizeTextbox() {
     textbox.style.height = 'auto';
     const minHeight = 200;
-    const nextHeight = Math.max(minHeight, textbox.scrollHeight);
+    const computedMaxHeight = Number.parseFloat(window.getComputedStyle(textbox).maxHeight);
+    const maxHeight = Number.isFinite(computedMaxHeight)
+      ? computedMaxHeight
+      : window.innerHeight * 0.55;
+    const nextHeight = Math.min(maxHeight, Math.max(minHeight, textbox.scrollHeight));
     textbox.style.height = nextHeight + 'px';
     textbox.style.overflowY = textbox.scrollHeight > nextHeight ? 'auto' : 'hidden';
   }
@@ -140,11 +144,11 @@ export const FEEDBACK_HTML_COMPOSER_HISTORY_SCRIPT = `
   }
 
   function isHistoryNearBottom() {
-    return (historyScrollEl.scrollHeight - historyScrollEl.scrollTop - historyScrollEl.clientHeight) < 32;
+    return historyScrollEl.scrollTop < 32;
   }
 
   function scrollHistoryToBottom() {
-    historyScrollEl.scrollTop = historyScrollEl.scrollHeight;
+    historyScrollEl.scrollTop = 0;
   }
 
   function updateHistoryJumpVisibility() {
