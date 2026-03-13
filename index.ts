@@ -1004,6 +1004,10 @@ function startFeedbackUI() {
       const age = now - lastActivity;
       if (age < maxAgeMs) continue;
 
+      // Skip sessions actively waiting for feedback — they're not truly stale
+      const state = feedbackStateBySession.get(sessionId);
+      if (state?.pendingWaiter) continue;
+
       try {
         await session.transport.close();
         await clearPendingWaiter(sessionId, "ui_prune");

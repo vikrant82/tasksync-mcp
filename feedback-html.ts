@@ -218,6 +218,7 @@ export const FEEDBACK_HTML = `<!DOCTYPE html>
   }
 ${FEEDBACK_HTML_ENHANCED_STYLES}
   .filepath { color: var(--fg-muted); font-size: 0.75rem; margin-bottom: 1rem; font-family: monospace; }
+  .session-name-highlight { color: var(--accent); font-weight: 700; font-size: 0.85rem; letter-spacing: 0.02em; }
   kbd { background: var(--border); padding: 0.1rem 0.4rem; border-radius: 3px; font-size: 0.8rem; }
 
   /* Focus-visible for all interactive elements */
@@ -481,7 +482,7 @@ ${FEEDBACK_HTML_COMPOSER_HISTORY_SCRIPT}
       ? '<span class="flag flag-route">route-target</span>'
       : '';
     const staleThreshold = 60 * 60 * 1000;
-    const isStale = s.lastActivityAt && (Date.now() - new Date(s.lastActivityAt).getTime()) > staleThreshold;
+    const isStale = !s.waitingForFeedback && s.lastActivityAt && (Date.now() - new Date(s.lastActivityAt).getTime()) > staleThreshold;
     const staleFlag = isStale ? '<span class="flag flag-stale" title="No activity for over 1 hour">stale</span>' : '';
     const sessionUrl = s.sessionUrl || ('/session/' + encodeURIComponent(s.sessionId));
     const metaCreated = s.createdAt ? formatTimeShort(new Date(s.createdAt)) : '';
@@ -519,7 +520,7 @@ ${FEEDBACK_HTML_COMPOSER_HISTORY_SCRIPT}
       return;
     }
     const staleThreshold = 60 * 60 * 1000;
-    const staleCount = sessions.filter(function(s) { return s.lastActivityAt && (Date.now() - new Date(s.lastActivityAt).getTime()) > staleThreshold; }).length;
+    const staleCount = sessions.filter(function(s) { return !s.waitingForFeedback && s.lastActivityAt && (Date.now() - new Date(s.lastActivityAt).getTime()) > staleThreshold; }).length;
     updatePruneButton(staleCount);
     const html = sessions.map((s) => renderSessionItem(s, active, filterText)).filter(Boolean).join('');
     if (!html) {
@@ -624,7 +625,7 @@ ${FEEDBACK_HTML_COMPOSER_HISTORY_SCRIPT}
     const targetSession = list.find((session) => session.sessionId === targetSessionId);
     const alias = targetSession && targetSession.alias ? targetSession.alias : '';
     const displayLabel = alias ? (alias + ' (' + targetSessionId + ')') : targetSessionId;
-    activeSessionSummaryEl.textContent = 'Active session: ' + displayLabel + ' | Known sessions: ' + list.length;
+    activeSessionSummaryEl.innerHTML = 'Active session: <span class="session-name-highlight">' + escapeHtml(displayLabel) + '</span> | Known sessions: ' + list.length;
   }
 
   function updateSessionMeta(active, sessions) {
