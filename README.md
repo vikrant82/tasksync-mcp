@@ -4,6 +4,7 @@ TaskSync is an MCP server focused on iterative human feedback loops for coding a
 
 It provides:
 - `get_feedback`: session-scoped feedback wait with SSE keepalive to maintain long-lived connections
+- **Image support**: paste, drag-drop, or attach images in the feedback UI — delivered to the agent as MCP `ImageContent` blocks
 - Optional heartbeat mode via `[WAITING]` responses for legacy/polling clients
 
 ## Transport Model
@@ -38,6 +39,35 @@ When `get_feedback` is called, the POST response stream stays open while waiting
 - The connection stays alive until feedback is submitted or the client disconnects
 
 This eliminates the previous pattern of repeated `[WAITING]` → re-POST cycles that consumed tokens and filled agent context windows.
+
+## Image Support
+
+The feedback UI supports sending images alongside text feedback. Images are delivered to the agent as MCP `ImageContent` blocks in the `get_feedback` tool response.
+
+**How to attach images:**
+- **Paste**: Copy an image and paste directly into the feedback textbox (Ctrl/Cmd+V)
+- **Drag & drop**: Drag image files onto the textbox
+- **File picker**: Click "Attach Image" to browse for files
+
+**Limits:**
+- Max 10 images per submission
+- Max 10 MB per image
+- Supported formats: PNG, JPEG, GIF, WebP, SVG
+
+Images appear as thumbnails in the composer before sending, and in the conversation history after submission. Click any history thumbnail for a full-size lightbox view.
+
+**MCP response format:**
+When images are included, `get_feedback` returns mixed content blocks:
+```json
+{
+  "content": [
+    { "type": "text", "text": "user's text feedback" },
+    { "type": "image", "data": "<base64>", "mimeType": "image/png" }
+  ]
+}
+```
+
+> **Note**: Client support for `ImageContent` varies. Claude Desktop handles images natively. OpenCode does not yet process `ImageContent` blocks from MCP tool results (as of late 2025).
 
 ## OpenCode Remote MCP Configuration
 

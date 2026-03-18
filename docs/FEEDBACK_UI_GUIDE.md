@@ -73,6 +73,34 @@ Fix:
 4. Enter feedback and submit.
 5. Use `Set Default` only if you want server fallback behavior to change.
 
+## Image Attachments
+
+You can send images alongside text feedback. Images are delivered to the agent as MCP `ImageContent` blocks.
+
+### Attaching Images
+
+- **Paste**: Copy an image (screenshot, clipboard) and paste into the textbox with Ctrl/Cmd+V
+- **Drag & drop**: Drag image files from your file manager onto the textbox
+- **File picker**: Click the "Attach Image" button to browse for files
+
+### Preview & Remove
+
+Attached images appear as thumbnails below the textbox. Hover over a thumbnail and click × to remove it before sending.
+
+### Limits
+
+- Up to 10 images per submission
+- Maximum 10 MB per image
+- Supported formats: PNG, JPEG, GIF, WebP, SVG
+
+### Image-Only Submissions
+
+You can send images without any text — the text field is not required when images are attached.
+
+### Viewing Images in History
+
+Submitted images appear as thumbnails in the conversation history. Click any thumbnail to open a full-size lightbox view (press Escape or click to close).
+
 ## Route vs Default
 
 - Route-target is per browser tab and affects this tab's sends/polls.
