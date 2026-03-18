@@ -345,11 +345,16 @@ ${FEEDBACK_HTML_ENHANCED_STYLES}
         <h2 id="composer-heading">Send feedback</h2>
         <form id="form" aria-labelledby="composer-heading">
           <label for="feedback" class="sr-only" style="position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);border:0;">Feedback message</label>
-          <textarea id="feedback" class="feedback-box" placeholder="Type your feedback here..." autofocus aria-describedby="keyboard-hint"></textarea>
+          <textarea id="feedback" class="feedback-box" placeholder="Type your feedback here... (paste or drag images)" autofocus aria-describedby="keyboard-hint"></textarea>
           <span id="keyboard-hint" style="position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);border:0;">Press Cmd+Enter or Ctrl+Enter to submit, Escape to blur</span>
+          <div id="image-previews" class="image-previews"></div>
           <div class="actions">
             <button type="submit" id="send-button" class="btn-primary">Send Feedback</button>
             <button type="button" id="clear-button" class="btn-secondary" onclick="clearFeedback()">Clear Draft</button>
+            <label class="image-attach-label" tabindex="0" role="button" aria-label="Attach image">
+              <input type="file" id="image-input" accept="image/png,image/jpeg,image/gif,image/webp" multiple style="display:none" />
+              Attach Image
+            </label>
           </div>
         </form>
         <div id="status" class="status" role="status" aria-live="polite"></div>
@@ -413,6 +418,8 @@ ${FEEDBACK_HTML_ENHANCED_STYLES}
   const toastViewportEl = document.getElementById('toast-viewport');
   const sendButtonEl = document.getElementById('send-button');
   const clearButtonEl = document.getElementById('clear-button');
+  const imagePreviewsEl = document.getElementById('image-previews');
+  const imageInputEl = document.getElementById('image-input');
   const historyListEl = document.getElementById('history-list');
   const historyScrollEl = document.getElementById('history-scroll');
   const historySummaryEl = document.getElementById('history-summary');
@@ -455,6 +462,24 @@ ${FEEDBACK_HTML_ENHANCED_STYLES}
   let lastWaitSignature = '';
   const notifiedSessions = new Set();
 ${FEEDBACK_HTML_COMPOSER_HISTORY_SCRIPT}
+  // ── Image lightbox ──
+  function openLightbox(src) {
+    const overlay = document.createElement('div');
+    overlay.className = 'image-lightbox';
+    const img = document.createElement('img');
+    img.src = src;
+    img.alt = 'Full-size image';
+    overlay.appendChild(img);
+    overlay.addEventListener('click', function() { overlay.remove(); });
+    document.addEventListener('keydown', function handler(e) {
+      if (e.key === 'Escape') {
+        overlay.remove();
+        document.removeEventListener('keydown', handler);
+      }
+    });
+    document.body.appendChild(overlay);
+  }
+
   function renderSessionItem(s, active, filterText) {
     const isActive = s.sessionId === active;
     const isRoute = s.sessionId === selectedSessionId;
@@ -890,7 +915,7 @@ ${FEEDBACK_HTML_COMPOSER_HISTORY_SCRIPT}
   function renderHistory(history) {
     const entries = Array.isArray(history) ? history : [];
     const shouldAutoScroll = !historyCollapsed && (lastRenderedHistorySignature === '' || isHistoryNearBottom());
-    const newSignature = JSON.stringify(entries.map((entry) => [entry?.createdAt || '', entry?.content || '']));
+    const newSignature = JSON.stringify(entries.map((entry) => [entry?.createdAt || '', entry?.content || '', (entry?.images || []).length]));
     if (newSignature === lastRenderedHistorySignature) return;
     lastRenderedHistorySignature = newSignature;
 
@@ -907,10 +932,20 @@ ${FEEDBACK_HTML_COMPOSER_HISTORY_SCRIPT}
     historyListEl.innerHTML = entries.slice().reverse().map((entry) => {
       const createdAt = entry && typeof entry.createdAt === 'string' ? entry.createdAt : '';
       const content = entry && typeof entry.content === 'string' ? entry.content : '';
+      const images = entry && Array.isArray(entry.images) ? entry.images : [];
       const label = formatHistoryTimestamp(createdAt);
+      let imagesHtml = '';
+      if (images.length > 0) {
+        imagesHtml = '<div class="history-images">' + images.map(function(img) {
+          if (!img || !img.data || !img.mimeType) return '';
+          const src = 'data:' + escapeHtml(img.mimeType) + ';base64,' + img.data;
+          return '<img src="' + src + '" alt="Attached image" loading="lazy" onclick="openLightbox(this.src)" />';
+        }).join('') + '</div>';
+      }
       return '<div class="history-item">'
-        + '<div class="history-meta">You \\u2022 ' + escapeHtml(label) + '</div>'
+        + '<div class="history-meta">You \\u2022 ' + escapeHtml(label) + (images.length > 0 ? ' \\u2022 ' + images.length + ' image' + (images.length > 1 ? 's' : '') : '') + '</div>'
         + '<div class="history-content">' + renderMarkdownContent(content) + '</div>'
+        + imagesHtml
         + '</div>';
     }).join('');
 

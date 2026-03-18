@@ -1,13 +1,20 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 
+export type ImageAttachment = {
+  data: string; // base64-encoded image data
+  mimeType: string; // e.g. "image/png", "image/jpeg"
+};
+
 export type PersistedFeedbackState = {
   queuedFeedback: string | null;
+  queuedImages?: ImageAttachment[] | null;
   queuedAt: string | null;
   latestFeedback: string;
   history: {
     role: "user";
     content: string;
+    images?: ImageAttachment[];
     createdAt: string;
   }[];
 };
@@ -50,6 +57,15 @@ function cloneFeedbackState(state: PersistedFeedbackState): PersistedFeedbackSta
   return JSON.parse(JSON.stringify(state)) as PersistedFeedbackState;
 }
 
+const VALID_IMAGE_MIME_TYPES = new Set(["image/png", "image/jpeg", "image/gif", "image/webp"]);
+
+function sanitizeImageAttachments(raw: unknown[]): ImageAttachment[] {
+  return raw
+    .filter((item): item is Record<string, unknown> => item !== null && typeof item === "object")
+    .filter((item) => typeof item.data === "string" && typeof item.mimeType === "string" && VALID_IMAGE_MIME_TYPES.has(item.mimeType))
+    .map((item) => ({ data: item.data as string, mimeType: item.mimeType as string }));
+}
+
 export class SessionStateStore {
   private readonly filePath: string;
   private state: PersistedTaskSyncState = cloneState(DEFAULT_PERSISTED_STATE);
@@ -67,6 +83,7 @@ export class SessionStateStore {
           sessionId,
           {
             queuedFeedback: typeof persisted.queuedFeedback === "string" ? persisted.queuedFeedback : null,
+            queuedImages: Array.isArray(persisted.queuedImages) ? sanitizeImageAttachments(persisted.queuedImages) : null,
             queuedAt: typeof persisted.queuedAt === "string" ? persisted.queuedAt : null,
             latestFeedback: typeof persisted.latestFeedback === "string" ? persisted.latestFeedback : "",
             history: Array.isArray(persisted.history)
@@ -76,10 +93,11 @@ export class SessionStateStore {
                     return {
                       role: "user" as const,
                       content: typeof item.content === "string" ? item.content : "",
+                      images: Array.isArray(item.images) ? sanitizeImageAttachments(item.images) : undefined,
                       createdAt: typeof item.createdAt === "string" ? item.createdAt : "",
                     };
                   })
-                  .filter((entry) => entry.content.length > 0)
+                  .filter((entry) => entry.content.length > 0 || (entry.images && entry.images.length > 0))
               : [],
           },
         ];

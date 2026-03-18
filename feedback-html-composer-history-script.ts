@@ -11,6 +11,7 @@ export const FEEDBACK_HTML_COMPOSER_HISTORY_SCRIPT = `
   let audioUnlocked = false;
   let composerBusy = false;
   let toastCounter = 0;
+  let pendingImages = [];
 
   // ── Wait timer state ──
   let waitTimerInterval = null;
@@ -77,6 +78,7 @@ export const FEEDBACK_HTML_COMPOSER_HISTORY_SCRIPT = `
     textbox.disabled = isBusy;
     sendButtonEl.disabled = isBusy;
     clearButtonEl.disabled = isBusy;
+    if (imageInputEl) imageInputEl.disabled = isBusy;
     sendButtonEl.classList.toggle('btn-busy', isBusy && mode === 'send');
     clearButtonEl.classList.toggle('btn-busy', isBusy && mode === 'clear');
     sendButtonEl.textContent = isBusy && mode === 'send' ? 'Sending…' : 'Send Feedback';
@@ -86,6 +88,141 @@ export const FEEDBACK_HTML_COMPOSER_HISTORY_SCRIPT = `
   function readErrorMessage(err) {
     if (err && typeof err.message === 'string' && err.message) return err.message;
     return String(err || 'Unknown error');
+  }
+
+  // ── Image attachment support ──
+  const VALID_IMAGE_TYPES = new Set(['image/png', 'image/jpeg', 'image/gif', 'image/webp']);
+  const MAX_IMAGE_SIZE = 10 * 1024 * 1024; // 10MB per image
+  const MAX_IMAGES = 10;
+
+  function readFileAsBase64(file) {
+    return new Promise(function(resolve, reject) {
+      const reader = new FileReader();
+      reader.onload = function() {
+        const dataUrl = reader.result;
+        const base64 = dataUrl.split(',')[1] || '';
+        resolve({ data: base64, mimeType: file.type, previewUrl: dataUrl });
+      };
+      reader.onerror = function() { reject(new Error('Failed to read file')); };
+      reader.readAsDataURL(file);
+    });
+  }
+
+  async function handleImageFiles(files) {
+    const validFiles = [];
+    for (let i = 0; i < files.length; i++) {
+      const file = files[i];
+      if (!VALID_IMAGE_TYPES.has(file.type)) {
+        showStatus('Unsupported image type: ' + file.type, 'error');
+        continue;
+      }
+      if (file.size > MAX_IMAGE_SIZE) {
+        showStatus('Image too large (max 10MB): ' + file.name, 'error');
+        continue;
+      }
+      validFiles.push(file);
+    }
+
+    const remaining = MAX_IMAGES - pendingImages.length;
+    if (remaining <= 0) {
+      showStatus('Maximum ' + MAX_IMAGES + ' images allowed', 'error');
+      return;
+    }
+    const toProcess = validFiles.slice(0, remaining);
+    if (toProcess.length < validFiles.length) {
+      showStatus('Only ' + toProcess.length + ' of ' + validFiles.length + ' images added (limit ' + MAX_IMAGES + ')', 'info');
+    }
+
+    for (const file of toProcess) {
+      try {
+        const imageData = await readFileAsBase64(file);
+        pendingImages.push(imageData);
+      } catch (err) {
+        showStatus('Error reading image: ' + readErrorMessage(err), 'error');
+      }
+    }
+
+    renderImagePreviews();
+  }
+
+  function renderImagePreviews() {
+    imagePreviewsEl.innerHTML = '';
+    pendingImages.forEach(function(img, idx) {
+      const wrapper = document.createElement('div');
+      wrapper.className = 'image-preview';
+      const imgEl = document.createElement('img');
+      imgEl.src = img.previewUrl;
+      imgEl.alt = 'Attached image ' + (idx + 1);
+      const removeBtn = document.createElement('button');
+      removeBtn.type = 'button';
+      removeBtn.className = 'image-preview-remove';
+      removeBtn.setAttribute('aria-label', 'Remove image ' + (idx + 1));
+      removeBtn.textContent = '\\u00d7';
+      removeBtn.addEventListener('click', function() {
+        pendingImages.splice(idx, 1);
+        renderImagePreviews();
+      });
+      wrapper.appendChild(imgEl);
+      wrapper.appendChild(removeBtn);
+      imagePreviewsEl.appendChild(wrapper);
+    });
+  }
+
+  function clearPendingImages() {
+    pendingImages = [];
+    renderImagePreviews();
+    if (imageInputEl) imageInputEl.value = '';
+  }
+
+  // ── Paste handler for images ──
+  textbox.addEventListener('paste', function(e) {
+    const items = e.clipboardData && e.clipboardData.items;
+    if (!items) return;
+    const imageFiles = [];
+    for (let i = 0; i < items.length; i++) {
+      if (items[i].kind === 'file' && VALID_IMAGE_TYPES.has(items[i].type)) {
+        const file = items[i].getAsFile();
+        if (file) imageFiles.push(file);
+      }
+    }
+    if (imageFiles.length > 0) {
+      e.preventDefault();
+      handleImageFiles(imageFiles);
+    }
+  });
+
+  // ── Drag & drop handlers ──
+  function isImageDrag(e) {
+    if (!e.dataTransfer || !e.dataTransfer.types) return false;
+    return e.dataTransfer.types.indexOf('Files') !== -1;
+  }
+
+  textbox.addEventListener('dragover', function(e) {
+    if (!isImageDrag(e)) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'copy';
+    textbox.classList.add('composer-drop-active');
+  });
+
+  textbox.addEventListener('dragleave', function(e) {
+    textbox.classList.remove('composer-drop-active');
+  });
+
+  textbox.addEventListener('drop', function(e) {
+    textbox.classList.remove('composer-drop-active');
+    if (!e.dataTransfer || !e.dataTransfer.files || e.dataTransfer.files.length === 0) return;
+    e.preventDefault();
+    handleImageFiles(e.dataTransfer.files);
+  });
+
+  // ── File input handler ──
+  if (imageInputEl) {
+    imageInputEl.addEventListener('change', function() {
+      if (imageInputEl.files && imageInputEl.files.length > 0) {
+        handleImageFiles(imageInputEl.files);
+        imageInputEl.value = '';
+      }
+    });
   }
 
   // ── Theme initialization ──
@@ -300,18 +437,26 @@ export const FEEDBACK_HTML_COMPOSER_HISTORY_SCRIPT = `
     e.preventDefault();
     if (composerBusy) return;
     const text = textbox.value.trim();
-    if (!text) return;
+    const hasImages = pendingImages.length > 0;
+    if (!text && !hasImages) return;
     const explicitSessionId = selectedSessionId || activeSessionInputEl.value.trim();
     setComposerBusy(true, 'send');
     try {
+      const payload = { content: text, sessionId: explicitSessionId || undefined };
+      if (hasImages) {
+        payload.images = pendingImages.map(function(img) {
+          return { data: img.data, mimeType: img.mimeType };
+        });
+      }
       const res = await fetch('/feedback', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ content: text, sessionId: explicitSessionId || undefined })
+        body: JSON.stringify(payload)
       });
       if (res.ok) {
         showStatus('Feedback sent!', 'success');
         textbox.value = '';
+        clearPendingImages();
         autoResizeTextbox();
         localStorage.removeItem(STORAGE_DRAFT);
         textbox.focus();
@@ -340,6 +485,7 @@ export const FEEDBACK_HTML_COMPOSER_HISTORY_SCRIPT = `
       }
       textbox.value = '';
       autoResizeTextbox();
+      clearPendingImages();
       localStorage.removeItem(STORAGE_DRAFT);
       showStatus('Feedback draft cleared', 'success');
       textbox.focus();
