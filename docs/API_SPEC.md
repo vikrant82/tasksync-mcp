@@ -19,6 +19,12 @@ Behavior:
 - Default: waits indefinitely with SSE keepalive (`: keepalive\n\n` every 30s).
 - Heartbeat mode (`--heartbeat`): returns `[WAITING]` on timeout (`--timeout=<ms>`).
 
+Response format:
+- Text-only feedback: `{ content: [{ type: "text", text: "..." }] }`
+- With images: `{ content: [{ type: "text", text: "..." }, { type: "image", data: "<base64>", mimeType: "image/png" }, ...] }`
+- Images are returned as MCP `ImageContent` blocks per the MCP specification.
+- Image-only submissions (no text) omit the text block.
+
 ## MCP HTTP Endpoints
 
 - `POST /mcp`
@@ -39,7 +45,7 @@ Session semantics:
 - `GET /`
 - `GET /session/:sessionId`
 - `GET /feedback/history?sessionId=<id>`
-- `POST /feedback` body: `{ "content": string, "sessionId"?: string }`
+- `POST /feedback` body: `{ "content": string, "images"?: [{ "data": string, "mimeType": string }], "sessionId"?: string }`
 - `GET /sessions`
 - `POST /sessions/default` body: `{ "sessionId": string }`
 - `POST /sessions/active` body: `{ "sessionId": string }` (legacy alias)
@@ -54,7 +60,8 @@ Session semantics:
 
 `GET /feedback/history` returns:
 - `sessionId`: normalized session ID used for the lookup
-- `history`: array of submitted user feedback entries `{ role, content, createdAt }`
+- `history`: array of submitted user feedback entries `{ role, content, createdAt, images? }`
+  - `images` (optional): array of `{ data: string (base64), mimeType: string }` when images were attached
 
 ## CLI Flags
 
@@ -66,10 +73,13 @@ Session semantics:
 ## Persistence Notes
 
 - Local persisted state path: `.tasksync/session-state.json`
-- Persisted state includes queued/latest feedback, bounded submitted feedback history, session metadata, alias metadata, and active UI session.
+- Persisted state includes queued/latest feedback, bounded submitted feedback history (including image attachments), session metadata, alias metadata, and active UI session.
 - Live transport objects, MCP server instances, waiter resolver closures, and replay-event history are not persisted to the session file.
 
 ## Feedback UI Notes
 
 - On wide screens, the UI shows feedback composer/history on the left and sessions/settings in a right sidebar.
 - The current session view includes latest feedback text plus submitted feedback history for that session.
+- Image attachments: paste, drag-drop, or file picker. Max 10 images, 10 MB each. Supported: PNG, JPEG, GIF, WebP, SVG.
+- Images are base64-encoded in the browser and sent in the `images` array of `POST /feedback`.
+- Express JSON body limit is 50 MB to accommodate base64 image payloads.
