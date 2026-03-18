@@ -79,6 +79,7 @@ export const FEEDBACK_HTML_COMPOSER_HISTORY_SCRIPT = `
     sendButtonEl.disabled = isBusy;
     clearButtonEl.disabled = isBusy;
     if (imageInputEl) imageInputEl.disabled = isBusy;
+    if (mdToolbarEl) mdToolbarEl.querySelectorAll('button').forEach(function(btn) { btn.disabled = isBusy; });
     sendButtonEl.classList.toggle('btn-busy', isBusy && mode === 'send');
     clearButtonEl.classList.toggle('btn-busy', isBusy && mode === 'clear');
     sendButtonEl.textContent = isBusy && mode === 'send' ? 'Sending…' : 'Send Feedback';
@@ -172,6 +173,162 @@ export const FEEDBACK_HTML_COMPOSER_HISTORY_SCRIPT = `
     pendingImages = [];
     renderImagePreviews();
     if (imageInputEl) imageInputEl.value = '';
+  }
+
+  // ── Markdown toolbar helpers ──
+  function mdWrapSelection(before, after) {
+    const start = textbox.selectionStart;
+    const end = textbox.selectionEnd;
+    const selected = textbox.value.substring(start, end);
+    if (selected) {
+      const replacement = before + selected + after;
+      textbox.setRangeText(replacement, start, end, 'select');
+      textbox.selectionStart = start;
+      textbox.selectionEnd = start + replacement.length;
+    } else {
+      const placeholder = before + after;
+      textbox.setRangeText(placeholder, start, end, 'end');
+      textbox.selectionStart = start + before.length;
+      textbox.selectionEnd = start + before.length;
+    }
+    textbox.focus();
+    textbox.dispatchEvent(new Event('input'));
+  }
+
+  function mdInsertAtCursor(text) {
+    const start = textbox.selectionStart;
+    textbox.setRangeText(text, start, textbox.selectionEnd, 'end');
+    textbox.focus();
+    textbox.dispatchEvent(new Event('input'));
+  }
+
+  function mdToggleLinePrefix(prefix) {
+    const start = textbox.selectionStart;
+    const end = textbox.selectionEnd;
+    const value = textbox.value;
+    const lineStart = value.lastIndexOf('\\n', start - 1) + 1;
+    const lineEnd = value.indexOf('\\n', end);
+    const actualLineEnd = lineEnd === -1 ? value.length : lineEnd;
+    const line = value.substring(lineStart, actualLineEnd);
+
+    if (line.startsWith(prefix)) {
+      textbox.setRangeText(line.substring(prefix.length), lineStart, actualLineEnd, 'end');
+    } else {
+      textbox.setRangeText(prefix + line, lineStart, actualLineEnd, 'end');
+    }
+    textbox.focus();
+    textbox.dispatchEvent(new Event('input'));
+  }
+
+  function mdInsertCodeBlock() {
+    const start = textbox.selectionStart;
+    const end = textbox.selectionEnd;
+    const selected = textbox.value.substring(start, end);
+    const needsNewlineBefore = start > 0 && textbox.value[start - 1] !== '\\n';
+    const prefix = needsNewlineBefore ? '\\n' : '';
+    const replacement = prefix + '\`\`\`\\n' + (selected || '') + '\\n\`\`\`\\n';
+    textbox.setRangeText(replacement, start, end, 'end');
+    if (!selected) {
+      const cursorPos = start + prefix.length + 4;
+      textbox.selectionStart = cursorPos;
+      textbox.selectionEnd = cursorPos;
+    }
+    textbox.focus();
+    textbox.dispatchEvent(new Event('input'));
+  }
+
+  function mdInsertLink() {
+    const start = textbox.selectionStart;
+    const end = textbox.selectionEnd;
+    const selected = textbox.value.substring(start, end);
+    if (selected && (selected.startsWith('http://') || selected.startsWith('https://'))) {
+      const replacement = '[link text](' + selected + ')';
+      textbox.setRangeText(replacement, start, end, 'select');
+      textbox.selectionStart = start + 1;
+      textbox.selectionEnd = start + 10;
+    } else {
+      const text = selected || 'link text';
+      const replacement = '[' + text + '](url)';
+      textbox.setRangeText(replacement, start, end, 'select');
+      if (!selected) {
+        textbox.selectionStart = start + 1;
+        textbox.selectionEnd = start + 10;
+      } else {
+        textbox.selectionStart = start + text.length + 3;
+        textbox.selectionEnd = start + text.length + 6;
+      }
+    }
+    textbox.focus();
+    textbox.dispatchEvent(new Event('input'));
+  }
+
+  function mdInsertHr() {
+    const start = textbox.selectionStart;
+    const value = textbox.value;
+    const needsNewline = start > 0 && value[start - 1] !== '\\n';
+    const hr = (needsNewline ? '\\n' : '') + '---\\n';
+    textbox.setRangeText(hr, start, textbox.selectionEnd, 'end');
+    textbox.focus();
+    textbox.dispatchEvent(new Event('input'));
+  }
+
+  function mdDedentLine() {
+    const pos = textbox.selectionStart;
+    const value = textbox.value;
+    const lineStart = value.lastIndexOf('\\n', pos - 1) + 1;
+    if (value.substring(lineStart, lineStart + 2) === '  ') {
+      textbox.setRangeText('', lineStart, lineStart + 2, 'start');
+    } else if (value[lineStart] === ' ') {
+      textbox.setRangeText('', lineStart, lineStart + 1, 'start');
+    }
+    textbox.focus();
+    textbox.dispatchEvent(new Event('input'));
+  }
+
+  function mdContinueList() {
+    const pos = textbox.selectionStart;
+    if (pos !== textbox.selectionEnd) return false;
+    const value = textbox.value;
+    const lineStart = value.lastIndexOf('\\n', pos - 1) + 1;
+    const currentLine = value.substring(lineStart, pos);
+
+    const bulletMatch = currentLine.match(/^(\\s*)([-*+])\\s(.*)/);
+    if (bulletMatch) {
+      if (!bulletMatch[3]) {
+        textbox.setRangeText('', lineStart, pos, 'end');
+        return true;
+      }
+      textbox.setRangeText('\\n' + bulletMatch[1] + bulletMatch[2] + ' ', pos, pos, 'end');
+      return true;
+    }
+
+    const numMatch = currentLine.match(/^(\\s*)(\\d+)\\.\\s(.*)/);
+    if (numMatch) {
+      if (!numMatch[3]) {
+        textbox.setRangeText('', lineStart, pos, 'end');
+        return true;
+      }
+      const nextNum = parseInt(numMatch[2], 10) + 1;
+      textbox.setRangeText('\\n' + numMatch[1] + nextNum + '. ', pos, pos, 'end');
+      return true;
+    }
+
+    return false;
+  }
+
+  function mdToolbarAction(action) {
+    switch (action) {
+      case 'bold': mdWrapSelection('**', '**'); break;
+      case 'italic': mdWrapSelection('_', '_'); break;
+      case 'code': mdWrapSelection('\`', '\`'); break;
+      case 'codeblock': mdInsertCodeBlock(); break;
+      case 'ul': mdToggleLinePrefix('- '); break;
+      case 'ol': mdToggleLinePrefix('1. '); break;
+      case 'heading': mdToggleLinePrefix('## '); break;
+      case 'link': mdInsertLink(); break;
+      case 'hr': mdInsertHr(); break;
+      case 'quote': mdToggleLinePrefix('> '); break;
+    }
   }
 
   // ── Paste handler for images ──
@@ -426,6 +583,41 @@ export const FEEDBACK_HTML_COMPOSER_HISTORY_SCRIPT = `
       e.preventDefault();
       form.dispatchEvent(new Event('submit'));
       return;
+    }
+    if ((e.metaKey || e.ctrlKey) && e.key === 'b') {
+      e.preventDefault();
+      mdToolbarAction('bold');
+      return;
+    }
+    if ((e.metaKey || e.ctrlKey) && e.key === 'i') {
+      e.preventDefault();
+      mdToolbarAction('italic');
+      return;
+    }
+    if ((e.metaKey || e.ctrlKey) && e.key === 'k') {
+      e.preventDefault();
+      mdToolbarAction('link');
+      return;
+    }
+    if ((e.metaKey || e.ctrlKey) && e.key === '\`') {
+      e.preventDefault();
+      mdToolbarAction('code');
+      return;
+    }
+    if (e.key === 'Tab' && !e.metaKey && !e.ctrlKey && !e.altKey) {
+      e.preventDefault();
+      if (e.shiftKey) {
+        mdDedentLine();
+      } else {
+        mdInsertAtCursor('  ');
+      }
+      return;
+    }
+    if (e.key === 'Enter' && !e.shiftKey && !e.metaKey && !e.ctrlKey) {
+      if (mdContinueList()) {
+        e.preventDefault();
+        return;
+      }
     }
     if (e.key === 'Escape') {
       textbox.blur();

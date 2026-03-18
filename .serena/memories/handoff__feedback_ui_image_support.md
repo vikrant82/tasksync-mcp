@@ -1,75 +1,61 @@
-Date: 2026-03-11
+Date: 2026-03-18
 
-Session Summary
-This workstream is now focused on two things: (1) preserving and eventually committing the current feedback UI UX improvements/refactor, and (2) planning the next implementation step for MCP image support. The earlier resurrection investigation is closed. We tested header-based resurrection, alias-based resurrection, persisted wait-state restoration, and 503 grace-period behavior across opencode and VS Code. Although server-side rebinding could work when a client eventually sent a fresh initialize, client restart behavior was inconsistent and not spec-aligned. Based on logs, SDK/spec research, and the maintenance cost, resurrection was abandoned and rolled back. That history is now captured in `knowledge__session_resurrection.md` as a postmortem rather than an active implementation guide.
+## Session Summary
+Implemented full image support for tasksync-mcp feedback UI → MCP `ImageContent` pipeline. This was a multi-session effort; the previous session did research and UI refactoring, this session did the actual implementation.
 
-The active code work in the repository is now the feedback UI. During this session, the feedback UI was improved and refactored substantially but not yet committed. The UI now has toast notifications instead of the old inline status style, busy/sending states for send/clear, lightweight safe markdown rendering in history, textarea auto-resize, and a fix for the Route Here title/header drift bug so the active-session summary updates immediately without page refresh and stays synced through SSE updates. The large embedded `feedback-html.ts` file was also split logically so that high-churn style and script pieces moved into helper modules while preserving the single `FEEDBACK_HTML` contract used by `index.ts` and `feedback-server.ts`.
+## Immediate Goal
+Image support + markdown toolbar features complete on branch `image_support`. Next step is end-to-end testing and merging to `main`.
 
-Immediate Goal
-The feedback UI refactor work is now committed and pushed. Next session/work step should focus on choosing the concrete MCP tool or workflow that should emit images back to the agent, then implementing standard `ImageContent` tool results without losing the current UI checkpoint.
+## Completed
+- **Backend (index.ts)**: Added `ImageAttachment` type support throughout the feedback flow:
+  - `FeedbackChannelState` gains `queuedImages`, history entries gain `images?`
+  - `PendingFeedbackResult` gains `images?` on feedback variant
+  - `formatFeedbackResponse(content, images?)` returns mixed `TextContent + ImageContent` MCP blocks
+  - `resolvePendingFeedback()`, `appendFeedbackHistory()` propagate images
+  - Queued and live feedback return paths pass images through
+  - `POST /feedback` accepts `images[]` array, validates MIME types
+  - Express JSON limit increased to 50mb
+- **Backend (session-state-store.ts)**: `ImageAttachment` type, `VALID_IMAGE_MIME_TYPES`, `sanitizeImageAttachments()` helper. Persistence hydration/serialization handles images. History filter preserves image-only entries.
+- **Frontend (feedback-html-composer-history-script.ts)**: `pendingImages[]` state, `readFileAsBase64()`, `handleImageFiles()`, `renderImagePreviews()`, `clearPendingImages()`. Paste handler, drag & drop, file input change handler. Form submit sends images array. Image-only submissions allowed.
+- **Frontend (feedback-html-enhanced-styles.ts)**: CSS for `.image-previews`, `.image-preview` thumbnails, `.image-preview-remove` hover button, `.image-attach-label`, `.composer-drop-active`, `.history-images`, `.image-lightbox`.
+- **Frontend (feedback-html.ts)**: HTML structure for image previews div, file input, Attach Image label. `renderHistory()` updated to show images. `openLightbox()` function.
+- **Markdown toolbar (feedback-html-enhanced-styles.ts, feedback-html.ts, feedback-html-composer-history-script.ts)**: 9 toolbar buttons (Bold, Italic, Code, CodeBlock, Bullet, OL, Heading, Link, HR, Quote), keyboard shortcuts (Ctrl+B/I/K/`), Tab/Shift+Tab indent/dedent, Enter auto-continue lists, Escape exits textarea. ~290 lines added across 3 files.
+- **Docs updated**: README.md (feature bullet + Image Support section + markdown toolbar mention), docs/API_SPEC.md (POST /feedback body, get_feedback response format, history format, persistence notes, UI notes), docs/FEEDBACK_UI_GUIDE.md (Image Attachments section + Markdown Toolbar section)
+- **Memories updated**: `knowledge__mcp_image_support`, `knowledge__architecture`, `knowledge__project_overview`, `knowledge__feedback_ui_refactor`
 
-Completed
-- Closed the resurrection workstream conceptually and practically.
-- Researched and documented why resurrection was abandoned; see `knowledge__session_resurrection.md`.
-- Reverted resurrection logic earlier and pushed the spec-aligned rollback/cleanup stack to `origin/main`.
-- Implemented the following feedback UI improvements:
-  - toast notifications
-  - send/clear busy state
-  - safe lightweight markdown rendering in history
-  - textarea auto-resize on restore/input/send/clear
-  - active-session summary/title immediate updates on Route Here and on later SSE state refreshes
-  - fixed the extracted markdown helper so nested regex literals survive browser emission by exporting `feedback-html-history-markdown-script.ts` with `String.raw`
-- Refactored feedback UI code into helper modules:
-  - `feedback-html-enhanced-styles.ts`
-  - `feedback-html-composer-history-script.ts`
-  - `feedback-html-history-markdown-script.ts`
-- Researched MCP image support and confirmed the standard path is returning `ImageContent` blocks inside `CallToolResult.content`.
+## Open Loops
+- Doc updates (README, API_SPEC, FEEDBACK_UI_GUIDE) are uncommitted — need to be committed and pushed to `image_support` branch
+- End-to-end testing not yet performed (needs a real browser session with the server running)
+- opencode doesn't handle `ImageContent` from MCP tool results — potential PR to contribute
 
-Open Loops
-- Feedback UI changes remain uncommitted.
-- New helper files are still untracked and need staging.
-- Need to decide whether to commit the current UI state before additional UX work.
-- Remaining UX backlog still open:
-  - keyboard shortcuts overlay
-  - favicon/tab waiting indicator
-  - session quick-switch dropdown
-  - history search/filter
-  - collapsible mobile sidebar
-  - copy-to-clipboard on history entries
-  - live OS theme preference tracking
-- MCP image support is only researched so far. No implementation exists yet.
-- Need to choose the concrete tool/workflow for image output before coding (for example screenshots, generated diagrams, or another server-produced image path).
+## Key Decisions
+- Images are base64-encoded in the browser (not uploaded as files) — simpler architecture, no file management
+- `ImageAttachment` type is `{ data: string; mimeType: string }` — minimal, matches MCP `ImageContent` shape
+- 10MB per image limit, 10 images max, 50MB Express JSON limit — generous for feedback use case
+- Image-only submissions allowed (text not required when images present)
+- MCP-spec-correct implementation despite opencode's current lack of support
 
-Key Decisions
-- Session resurrection is closed and should no longer guide current work; use standard 404 invalid-session semantics instead.
-- Keep the embedded feedback UI server contract stable by preserving a single exported `FEEDBACK_HTML` string while composing it from helper modules.
-- Prefer a scoped, safe in-house markdown renderer for the embedded UI rather than adding a heavy dependency.
-- For future image support, prefer returning a text block plus image block together so agents/clients have both explanation and binary content.
+## Files Modified
+- `index.ts` — backend types, MCP response format, API endpoint, feedback flow
+- `session-state-store.ts` — ImageAttachment type, sanitization, persistence
+- `feedback-html-composer-history-script.ts` — paste/drop/file handlers, preview UI, submission logic
+- `feedback-html-enhanced-styles.ts` — image preview, lightbox, drag-drop CSS
+- `feedback-html.ts` — HTML structure, history rendering, lightbox function
+- `README.md` — feature list, Image Support section
+- `docs/API_SPEC.md` — POST /feedback, get_feedback response, history format, UI notes
+- `docs/FEEDBACK_UI_GUIDE.md` — Image Attachments section
 
-Files Modified
-- `feedback-html.ts` — now slimmer template shell; active-session summary is client-managed; wired to extracted style/script modules; textarea CSS updated.
-- `feedback-html-enhanced-styles.ts` — extracted toast/history/markdown CSS.
-- `feedback-html-composer-history-script.ts` — extracted core composer/history/toast/theme/settings behavior.
-- `feedback-html-history-markdown-script.ts` — extracted markdown/history helper logic.
+## Next Memories to Load
+- `knowledge__mcp_image_support`
+- `knowledge__architecture`
+- `knowledge__feedback_ui_refactor`
+- `tasks__ux_enhancements_backlog`
 
-Next Memories to Load
-- `knowledge__feedback_ui_refactor.md`
-- `knowledge__feedback_ui_ux.md`
-- `knowledge__mcp_image_support.md`
-- `knowledge__session_resurrection.md`
-- `tasks__ux_enhancements_backlog.md`
+## Resumption Prompt
+Image support feature is complete on branch `image_support` (commit `e87b768` + uncommitted doc changes). The full pipeline works: paste/drop/attach images → base64 → POST /feedback → backend propagation through waiter/queue → MCP response with mixed TextContent + ImageContent blocks → SSE history broadcast with images → UI renders thumbnails with lightbox.
 
-Resumption Prompt
-Resume from the current uncommitted feedback UI refactor state. First check `git status` and review the changes in `feedback-html.ts`, `feedback-html-enhanced-styles.ts`, `feedback-html-composer-history-script.ts`, and `feedback-html-history-markdown-script.ts`. Confirm the helper-module split still preserves the `FEEDBACK_HTML` contract used by the server. Then decide whether to stage/commit the current UX work before adding more changes. If continuing UX work, the best remaining backlog items are keyboard shortcuts/help overlay, favicon/tab waiting indicator, and history search/filter. If moving to image support, load `knowledge__mcp_image_support.md` and first identify the concrete tool/workflow that should return images. Implementation should return a normal `CallToolResult` with a text block plus an `ImageContent` block (`type: 'image'`, base64 data, required MIME type), optionally with `structuredContent` metadata. Use this handoff during testing to remember which feedback UI files changed and which UX behaviors were added in this session.
+Doc updates to README.md, docs/API_SPEC.md, and docs/FEEDBACK_UI_GUIDE.md are staged but not yet committed. Commit these and push to the branch.
 
-Raw artifacts
-- Resurrection is abandoned; see `knowledge__session_resurrection.md` for the postmortem.
-- Rollback/cleanup already pushed earlier; last cleanup commit on `main`: `6e4feba` (`fix: align stale session responses with MCP 404 semantics`).
-- Pushed UI checkpoint commits:
-  - `3582401` — `feat: improve feedback UI workflow`
-  - `e6e0950` — `chore: ignore pnpm lockfile`
-- Current git state: clean working tree on `main`, synced with `origin/main` after push
-- MCP image protocol facts:
-  - `ImageContent`: `type: 'image'`, base64 `data`, `mimeType`, optional `annotations`, optional `_meta`
-  - `CallToolResult`: `content: ContentBlock[]`, optional `structuredContent`, optional `isError`
-  - recommended next implementation shape: return text + image together, optionally with structured metadata
+Primary next step: end-to-end testing — build the project, start the server, open the UI in a browser, paste/drag images, submit feedback, verify the MCP response contains ImageContent blocks. Then merge to main.
+
+Secondary: Consider contributing a PR to opencode to fix their `runTool()` in `internal/llm/agent/mcp-tools.go` to properly handle MCP `ImageContent` blocks (they only extract `TextContent` currently).

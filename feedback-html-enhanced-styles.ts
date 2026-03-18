@@ -225,6 +225,76 @@ export const FEEDBACK_HTML_ENHANCED_STYLES = `
     box-shadow: 0 2px 8px rgba(0,0,0,0.2);
   }
 
+   /* Markdown toolbar */
+  .md-toolbar {
+    display: flex;
+    align-items: center;
+    gap: 2px;
+    padding: 0.3rem 0.35rem;
+    background: var(--bg-surface);
+    border: 1px solid var(--border);
+    border-bottom: none;
+    border-radius: var(--radius) var(--radius) 0 0;
+    flex-wrap: wrap;
+  }
+  .md-toolbar + textarea {
+    border-top-left-radius: 0;
+    border-top-right-radius: 0;
+  }
+  .md-toolbar button {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 28px;
+    height: 26px;
+    padding: 0 0.35rem;
+    border: 1px solid transparent;
+    border-radius: 3px;
+    background: transparent;
+    color: var(--fg-muted);
+    font-size: 0.78rem;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+    cursor: pointer;
+    transition: background var(--transition-fast), color var(--transition-fast), border-color var(--transition-fast);
+  }
+  .md-toolbar button:hover {
+    background: var(--accent-subtle);
+    color: var(--fg);
+    border-color: var(--border);
+    opacity: 1;
+  }
+  .md-toolbar button:active {
+    background: var(--accent-subtle);
+    border-color: var(--accent);
+  }
+  .md-toolbar button:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: -1px;
+  }
+  .md-toolbar .md-toolbar-sep {
+    width: 1px;
+    height: 16px;
+    margin: 0 0.25rem;
+    background: var(--border);
+    flex-shrink: 0;
+  }
+  .md-toolbar .md-btn-bold { font-weight: 700; }
+  .md-toolbar .md-btn-italic { font-style: italic; }
+  .md-toolbar .md-btn-heading { font-weight: 600; font-size: 0.82rem; }
+  .md-toolbar-hint {
+    margin-left: auto;
+    font-size: 0.68rem;
+    color: var(--fg-muted);
+    opacity: 0.6;
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
+    white-space: nowrap;
+  }
+  @media (max-width: 480px) {
+    .md-toolbar { gap: 1px; padding: 0.2rem; }
+    .md-toolbar button { min-width: 24px; height: 24px; font-size: 0.72rem; }
+    .md-toolbar-hint { display: none; }
+  }
+
   /* Image lightbox overlay */
   .image-lightbox {
     position: fixed;

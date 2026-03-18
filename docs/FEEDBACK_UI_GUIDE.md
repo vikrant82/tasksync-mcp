@@ -101,6 +101,37 @@ You can send images without any text — the text field is not required when ima
 
 Submitted images appear as thumbnails in the conversation history. Click any thumbnail to open a full-size lightbox view (press Escape or click to close).
 
+## Markdown Toolbar
+
+The feedback textbox includes a markdown formatting toolbar and keyboard shortcuts.
+
+### Toolbar Buttons
+
+| Button | Action | Shortcut |
+|--------|--------|----------|
+| **B** | Bold (`**text**`) | Ctrl/Cmd+B |
+| *I* | Italic (`*text*`) | Ctrl/Cmd+I |
+| `</>` | Inline code (`` `code` ``) | Ctrl/Cmd+` |
+| ` ``` ` | Code block (fenced) | — |
+| • | Bullet list (`- item`) | — |
+| 1. | Ordered list (`1. item`) | — |
+| # | Heading (`## text`) | — |
+| 🔗 | Link (`[text](url)`) | Ctrl/Cmd+K |
+| — | Horizontal rule (`---`) | — |
+| " | Blockquote (`> text`) | — |
+
+### Smart Editing
+
+- **Tab**: Inserts 2 spaces (indent)
+- **Shift+Tab**: Removes up to 2 leading spaces (dedent)
+- **Enter in lists**: Auto-continues bullet (`- `) or numbered (`1. `) lists. Press Enter on an empty list item to stop the list.
+- **Escape**: Exits the textarea (restores normal Tab key navigation)
+
+### Selection Behavior
+
+- With text selected: toolbar buttons wrap the selection (e.g., `**selected**`)
+- Without selection: toolbar buttons insert placeholder markers with cursor positioned between them
+
 ## Route vs Default
 
 - Route-target is per browser tab and affects this tab's sends/polls.
