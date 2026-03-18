@@ -16,7 +16,7 @@ import { z } from "zod";
 import { zodToJsonSchema } from "zod-to-json-schema";
 import express from "express";
 import { FEEDBACK_HTML } from "./feedback-html.js";
-import { SessionStateStore } from "./session-state-store.js";
+import { SessionStateStore, type ImageAttachment } from "./session-state-store.js";
 import { InMemoryStreamEventStore } from "./stream-event-store.js";
 
 const DEFAULT_TIMEOUT = 3_600_000; // safety-net timeout (1 hour); SSE keepalive prevents idle disconnects, this is the absolute max wait
@@ -50,11 +50,13 @@ type FeedbackChannelState = {
     resolve: (result: PendingFeedbackResult) => void;
   } | null;
   queuedFeedback: string | null;
+  queuedImages: ImageAttachment[] | null;
   queuedAt: string | null;
   latestFeedback: string;
   history: {
     role: "user";
     content: string;
+    images?: ImageAttachment[];
     createdAt: string;
   }[];
 };
@@ -72,7 +74,7 @@ type StreamableSessionEntry = {
 };
 
 type PendingFeedbackResult =
-  | { type: "feedback"; content: string }
+  | { type: "feedback"; content: string; images?: ImageAttachment[] }
   | { type: "closed"; reason: string };
 
 const feedbackStateBySession = new Map<string, FeedbackChannelState>();
@@ -405,6 +407,7 @@ function getFeedbackState(sessionId: string): FeedbackChannelState {
   const created: FeedbackChannelState = {
     pendingWaiter: null,
     queuedFeedback: null,
+    queuedImages: null,
     queuedAt: null,
     latestFeedback: "",
     history: [],
@@ -418,17 +421,19 @@ function toPersistedFeedbackState(sessionId: string) {
   const state = getFeedbackState(sessionId);
   return {
     queuedFeedback: state.queuedFeedback,
+    queuedImages: state.queuedImages,
     queuedAt: state.queuedAt,
     latestFeedback: state.latestFeedback,
     history: state.history,
   };
 }
 
-function appendFeedbackHistory(sessionId: string, content: string) {
+function appendFeedbackHistory(sessionId: string, content: string, images?: ImageAttachment[]) {
   const state = getFeedbackState(sessionId);
   state.history.push({
     role: "user",
     content,
+    ...(images && images.length > 0 ? { images } : {}),
     createdAt: new Date().toISOString(),
   });
   if (state.history.length > MAX_SESSION_HISTORY) {
@@ -507,6 +512,7 @@ async function hydratePersistedState() {
     feedbackStateBySession.set(sessionId, {
       pendingWaiter: null,
       queuedFeedback: persistedState.queuedFeedback,
+      queuedImages: persistedState.queuedImages ?? null,
       queuedAt: persistedState.queuedAt,
       latestFeedback: persistedState.latestFeedback,
       history: Array.isArray(persistedState.history) ? persistedState.history : [],
@@ -542,8 +548,15 @@ async function nextClientGeneration(alias: string): Promise<number> {
   return nextGeneration;
 }
 
-function formatFeedbackResponse(content: string): { content: { type: "text"; text: string }[] } {
-  return { content: [{ type: "text", text: content }] };
+function formatFeedbackResponse(content: string, images?: ImageAttachment[]): { content: ({ type: "text"; text: string } | { type: "image"; data: string; mimeType: string })[] } {
+  const blocks: ({ type: "text"; text: string } | { type: "image"; data: string; mimeType: string })[] = [];
+  blocks.push({ type: "text", text: content });
+  if (images && images.length > 0) {
+    for (const img of images) {
+      blocks.push({ type: "image", data: img.data, mimeType: img.mimeType });
+    }
+  }
+  return { content: blocks };
 }
 
 function normalizeAlias(raw: unknown): string {
@@ -574,7 +587,7 @@ function slugifyForSessionId(clientAlias: string): string {
   return namePart.toLowerCase().replace(/[^a-z0-9-]/g, "-").replace(/-+/g, "-").replace(/^-|-$/g, "") || "session";
 }
 
-async function resolvePendingFeedback(content: string, rawSessionId?: string): Promise<boolean> {
+async function resolvePendingFeedback(content: string, rawSessionId?: string, images?: ImageAttachment[]): Promise<boolean> {
   const sessionId = getSessionId(rawSessionId);
   const state = getFeedbackState(sessionId);
   const queuedAt = new Date().toISOString();
@@ -582,6 +595,7 @@ async function resolvePendingFeedback(content: string, rawSessionId?: string): P
   logEvent("debug", "feedback.received", {
     sessionId,
     contentLength: content.length,
+    imageCount: images?.length ?? 0,
     hasPendingWaiter: Boolean(state.pendingWaiter),
     pendingWaitId: state.pendingWaiter?.waitId,
   });
@@ -590,9 +604,10 @@ async function resolvePendingFeedback(content: string, rawSessionId?: string): P
     const waiter = state.pendingWaiter;
     state.pendingWaiter = null;
     state.queuedAt = null;
+    state.queuedImages = null;
     await persistFeedbackState(sessionId);
     broadcastUiState(sessionId);
-    waiter.resolve({ type: "feedback", content });
+    waiter.resolve({ type: "feedback", content, ...(images && images.length > 0 ? { images } : {}) });
     logEvent("info", "feedback.delivered.to_waiter", {
       sessionId,
       requestId: waiter.requestId,
@@ -600,11 +615,13 @@ async function resolvePendingFeedback(content: string, rawSessionId?: string): P
       waitStartedAt: waiter.startedAt,
       waitDurationMs: Date.now() - Date.parse(waiter.startedAt),
       contentLength: content.length,
+      imageCount: images?.length ?? 0,
     });
     return true;
   }
 
   state.queuedFeedback = content;
+  state.queuedImages = images && images.length > 0 ? images : null;
   state.queuedAt = queuedAt;
   await persistFeedbackState(sessionId);
   broadcastUiState(sessionId);
@@ -612,6 +629,7 @@ async function resolvePendingFeedback(content: string, rawSessionId?: string): P
     sessionId,
     queuedAt,
     contentLength: content.length,
+    imageCount: images?.length ?? 0,
   });
   return false;
 }
@@ -703,8 +721,10 @@ function registerServerHandlers(targetServer: Server) {
 
           if (feedbackState.queuedFeedback !== null) {
             const content = feedbackState.queuedFeedback;
+            const images = feedbackState.queuedImages ?? undefined;
             const queuedAt = feedbackState.queuedAt;
             feedbackState.queuedFeedback = null;
+            feedbackState.queuedImages = null;
             feedbackState.queuedAt = null;
             await persistFeedbackState(sessionId);
             broadcastUiState(sessionId);
@@ -713,8 +733,9 @@ function registerServerHandlers(targetServer: Server) {
               queuedAt,
               queuedDurationMs: queuedAt ? Date.now() - Date.parse(queuedAt) : undefined,
               contentLength: content.length,
+              imageCount: images?.length ?? 0,
             });
-            return formatFeedbackResponse(content);
+            return formatFeedbackResponse(content, images);
           }
 
           const waitId = randomUUID();
@@ -830,9 +851,10 @@ function registerServerHandlers(targetServer: Server) {
             waitStartedAt,
             waitDurationMs: Date.now() - Date.parse(waitStartedAt),
             contentLength: result.content.length,
+            imageCount: result.images?.length ?? 0,
             keepalivesSent: keepaliveSentCount,
           });
-          return formatFeedbackResponse(result.content);
+          return formatFeedbackResponse(result.content, result.images);
         }
 
         default:
@@ -867,7 +889,7 @@ function startFeedbackUI() {
   const uiBaseUrl = `http://localhost:${uiPort}`;
   const feedbackApp = express();
   feedbackApp.use(express.urlencoded({ extended: true }));
-  feedbackApp.use(express.json());
+  feedbackApp.use(express.json({ limit: "50mb" }));
   installDebugHttpLogging(feedbackApp, "ui.http");
 
   function renderHtml(viewSessionId?: string): string {
@@ -1035,22 +1057,29 @@ function startFeedbackUI() {
   feedbackApp.post("/feedback", async (req, res) => {
     try {
       const content = typeof req.body === "string" ? req.body : req.body.content ?? "";
+      const rawImages = Array.isArray(req.body?.images) ? req.body.images : [];
+      const images: ImageAttachment[] = rawImages
+        .filter((img: unknown): img is Record<string, unknown> => img !== null && typeof img === "object")
+        .filter((img: Record<string, unknown>) => typeof img.data === "string" && typeof img.mimeType === "string")
+        .map((img: Record<string, unknown>) => ({ data: img.data as string, mimeType: img.mimeType as string }));
       const requestedSessionId = typeof req.body?.sessionId === "string" ? req.body.sessionId.trim() : "";
       const normalizedSessionId = resolveUiSessionTarget(requestedSessionId);
 
       const state = getFeedbackState(normalizedSessionId);
       state.latestFeedback = content;
-      if (content.trim().length > 0) {
-        appendFeedbackHistory(normalizedSessionId, content);
+      const hasContent = content.trim().length > 0 || images.length > 0;
+      if (hasContent) {
+        appendFeedbackHistory(normalizedSessionId, content, images.length > 0 ? images : undefined);
       }
       await persistFeedbackState(normalizedSessionId);
       logEvent("info", "ui.feedback.post", {
         requestedSessionId,
         targetSessionId: normalizedSessionId,
         contentLength: content.length,
+        imageCount: images.length,
       });
-      if (content.trim().length > 0) {
-        await resolvePendingFeedback(content, normalizedSessionId);
+      if (hasContent) {
+        await resolvePendingFeedback(content, normalizedSessionId, images.length > 0 ? images : undefined);
       }
       broadcastUiState(normalizedSessionId);
 
