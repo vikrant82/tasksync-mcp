@@ -8,6 +8,8 @@ Key features:
 - Legacy heartbeat mode (`--heartbeat`): returns [WAITING] on timeout, agent re-POSTs.
 - Feedback UI is embedded by default and uses SSE (`/events`) for live updates.
 - UI shows two-column layout: composer/history (left), sessions/settings (right).
+- Image support: paste, drag-drop, or attach images in the feedback UI. Images sent as base64 in `POST /feedback`, returned to agents as MCP `ImageContent` blocks alongside text. History shows thumbnails with lightbox zoom.
+- Markdown toolbar: formatting buttons (Bold, Italic, Code, etc.), keyboard shortcuts (Ctrl+B/I/K/`), Tab indent, auto-continue lists.
 - Per-session submitted feedback history stored in bounded form and exposed via `/feedback/history`.
 - Session/feedback metadata persisted locally in `.tasksync/session-state.json`.
 - Replay is transient/in-memory only; stale pre-restart session IDs are invalid.

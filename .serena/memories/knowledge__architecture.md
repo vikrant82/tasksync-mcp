@@ -30,6 +30,8 @@ Updated 2026-03-10.
 - `get_feedback` waiter ownership tracked per raw HTTP request via request-scoped IDs
 - Request abort/response close cleanup: abandoned POST waits clear only their own waiter
 - Later feedback queued if no active waiter
+- Image support: `POST /feedback` accepts optional `images[]` array of `{data: base64, mimeType}`. Backend propagates through waiter/queue. `formatFeedbackResponse()` returns mixed `TextContent + ImageContent` MCP blocks. Express JSON limit: 50mb.
+- `ImageAttachment` type and `sanitizeImageAttachments()` helper defined in `session-state-store.ts`
 
 ## Logging
 - Compact structured logs via `logEvent(...)`

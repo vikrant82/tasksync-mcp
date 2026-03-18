@@ -345,8 +345,23 @@ ${FEEDBACK_HTML_ENHANCED_STYLES}
         <h2 id="composer-heading">Send feedback</h2>
         <form id="form" aria-labelledby="composer-heading">
           <label for="feedback" class="sr-only" style="position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);border:0;">Feedback message</label>
+          <div class="md-toolbar" id="md-toolbar" role="toolbar" aria-label="Markdown formatting">
+            <button type="button" data-md="bold" class="md-btn-bold" title="Bold (Ctrl+B)">B</button>
+            <button type="button" data-md="italic" class="md-btn-italic" title="Italic (Ctrl+I)">I</button>
+            <button type="button" data-md="code" title="Inline code (Ctrl+\`)">&#60;/&#62;</button>
+            <button type="button" data-md="codeblock" title="Code block">\`\`\`</button>
+            <span class="md-toolbar-sep" role="separator"></span>
+            <button type="button" data-md="ul" title="Bullet list">&#8226; list</button>
+            <button type="button" data-md="ol" title="Numbered list">1.</button>
+            <button type="button" data-md="heading" class="md-btn-heading" title="Heading"># H</button>
+            <span class="md-toolbar-sep" role="separator"></span>
+            <button type="button" data-md="link" title="Link (Ctrl+K)">&#128279;</button>
+            <button type="button" data-md="hr" title="Horizontal rule">&#8212;</button>
+            <button type="button" data-md="quote" title="Blockquote">&#8220;</button>
+            <span class="md-toolbar-hint">Tab indents &middot; Esc to exit</span>
+          </div>
           <textarea id="feedback" class="feedback-box" placeholder="Type your feedback here... (paste or drag images)" autofocus aria-describedby="keyboard-hint"></textarea>
-          <span id="keyboard-hint" style="position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);border:0;">Press Cmd+Enter or Ctrl+Enter to submit, Escape to blur</span>
+          <span id="keyboard-hint" style="position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);border:0;">Press Cmd+Enter or Ctrl+Enter to submit. Tab to indent. Escape to exit textarea.</span>
           <div id="image-previews" class="image-previews"></div>
           <div class="actions">
             <button type="submit" id="send-button" class="btn-primary">Send Feedback</button>
@@ -420,6 +435,7 @@ ${FEEDBACK_HTML_ENHANCED_STYLES}
   const clearButtonEl = document.getElementById('clear-button');
   const imagePreviewsEl = document.getElementById('image-previews');
   const imageInputEl = document.getElementById('image-input');
+  const mdToolbarEl = document.getElementById('md-toolbar');
   const historyListEl = document.getElementById('history-list');
   const historyScrollEl = document.getElementById('history-scroll');
   const historySummaryEl = document.getElementById('history-summary');
@@ -1014,6 +1030,16 @@ ${FEEDBACK_HTML_COMPOSER_HISTORY_SCRIPT}
       setConnectionStatus('reconnecting');
     };
   }
+
+  // ── Markdown toolbar delegation ──
+  mdToolbarEl.addEventListener('mousedown', function(e) {
+    e.preventDefault();
+  });
+  mdToolbarEl.addEventListener('click', function(e) {
+    const btn = e.target.closest('button[data-md]');
+    if (!btn) return;
+    mdToolbarAction(btn.getAttribute('data-md'));
+  });
 
   // ── Bootstrap ──
   loadSessions();

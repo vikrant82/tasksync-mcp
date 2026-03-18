@@ -5,6 +5,7 @@ TaskSync is an MCP server focused on iterative human feedback loops for coding a
 It provides:
 - `get_feedback`: session-scoped feedback wait with SSE keepalive to maintain long-lived connections
 - **Image support**: paste, drag-drop, or attach images in the feedback UI — delivered to the agent as MCP `ImageContent` blocks
+- **Markdown toolbar**: formatting buttons, keyboard shortcuts (Ctrl+B/I/K), Tab indentation, and auto-continue lists
 - Optional heartbeat mode via `[WAITING]` responses for legacy/polling clients
 
 ## Transport Model
