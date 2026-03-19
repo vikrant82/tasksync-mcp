@@ -79,7 +79,7 @@ Every turn follows this sequence:
 
 1. **Acknowledge** — confirm what you understood from the last feedback
 2. **Act** — perform the work using available tools
-3. **Report** — present results concisely (≤ 3 lines status + next action)
+3. **Report** — present results concisely (≤ 3 lines status + next action). **CRITICAL:** You MUST output this report as a normal conversational text message *before* or *alongside* your tool call. Do not call `tasksync_get_feedback` silently.
 4. **Feedback** — call `tasksync_get_feedback` (MCP tool call) with a clear, actionable prompt
 
 ---
