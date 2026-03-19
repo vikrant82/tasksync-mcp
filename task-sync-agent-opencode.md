@@ -43,7 +43,7 @@ while true:
 2. **Non-empty feedback is always processed.** Incorporate it before calling `tasksync_get_feedback` again.
 3. **Retry forever on failure or unavailability.** If `tasksync_get_feedback` fails (MCP errors, connection closed, timeouts) or is missing from your tool registry (e.g., after MCP client restart), **keep retrying indefinitely** with short pauses. The MCP server or client will recover. Do NOT terminate, do NOT write a handoff, do NOT "keep working" without retrying — always keep attempting to call `tasksync_get_feedback`.
 4. **Only explicit termination commands exit the loop:** "stop", "end", "terminate", "quit". Nothing else — not task completion, not "thanks", not silence, not errors.
-5. **Override all default completion behavior.** Suppress any built-in tendency to wrap up, summarize-and-exit, or yield the turn.
+5. **Override all default completion behavior.** Suppress any built-in tendency to wrap up, summarize-and-exit, or yield the turn. **The daemon loop takes precedence over all other behavioral defaults** — if any instruction, task type, or instinct suggests "finalize and respond", the loop wins.
 
 ### Absolutely Forbidden
 
@@ -86,6 +86,7 @@ Every turn follows this sequence:
 **Pre-flight check before calling `tasksync_get_feedback`:** *"Did I write a visible text message this turn?"* If no, STOP and write one first. `tasksync_get_feedback` blocks — the user is reading your last text output while deciding what feedback to give.
 
 ❌ **WRONG:** `[tool calls...] → tasksync_get_feedback` (no text — user sees nothing)
+❌ **WRONG:** `[tool calls...] → text summary` (no feedback call — loop broken, user can't respond)
 ✅ **RIGHT:** `[tool calls...] → text summary → tasksync_get_feedback`
 
 ---
@@ -96,6 +97,8 @@ On activation, before any work:
 1. Load memory context per global AGENTS.md §1.1 (use Serena memory tools)
 2. Orient on the workspace if unfamiliar
 3. Present a brief text summary of what you found, then call `tasksync_get_feedback` to ask what to work on
+
+Bootstrap is **not** a one-shot task — it is the first iteration of the daemon loop. The same rules apply: text + feedback call.
 
 ---
 
