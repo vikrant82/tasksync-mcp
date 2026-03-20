@@ -10,6 +10,8 @@ export type PersistedFeedbackState = {
   queuedFeedback: string | null;
   queuedImages?: ImageAttachment[] | null;
   queuedAt: string | null;
+  waitingIntent: boolean;
+  lastFeedbackRequestAt: string | null;
   latestFeedback: string;
   history: {
     role: "user";
@@ -25,6 +27,7 @@ export type PersistedSessionMetadata = {
   clientAlias: string;
   clientGeneration: number | null;
   createdAt: string;
+  lastSeenAt: string;
   lastActivityAt: string;
   status: "active" | "closed";
 };
@@ -32,6 +35,9 @@ export type PersistedSessionMetadata = {
 export type PersistedTaskSyncState = {
   version: 1;
   activeUiSessionId: string;
+  settings: {
+    disconnectAfterMinutes: number;
+  };
   feedbackBySession: Record<string, PersistedFeedbackState>;
   sessionMetadataById: Record<string, PersistedSessionMetadata>;
   manualAliasBySession: Record<string, string>;
@@ -42,6 +48,9 @@ export type PersistedTaskSyncState = {
 const DEFAULT_PERSISTED_STATE: PersistedTaskSyncState = {
   version: 1,
   activeUiSessionId: "__default__",
+  settings: {
+    disconnectAfterMinutes: 10,
+  },
   feedbackBySession: {},
   sessionMetadataById: {},
   manualAliasBySession: {},
@@ -85,6 +94,8 @@ export class SessionStateStore {
             queuedFeedback: typeof persisted.queuedFeedback === "string" ? persisted.queuedFeedback : null,
             queuedImages: Array.isArray(persisted.queuedImages) ? sanitizeImageAttachments(persisted.queuedImages) : null,
             queuedAt: typeof persisted.queuedAt === "string" ? persisted.queuedAt : null,
+            waitingIntent: typeof persisted.waitingIntent === "boolean" ? persisted.waitingIntent : false,
+            lastFeedbackRequestAt: typeof persisted.lastFeedbackRequestAt === "string" ? persisted.lastFeedbackRequestAt : null,
             latestFeedback: typeof persisted.latestFeedback === "string" ? persisted.latestFeedback : "",
             history: Array.isArray(persisted.history)
               ? persisted.history
@@ -118,6 +129,9 @@ export class SessionStateStore {
             clientAlias: typeof persisted.clientAlias === "string" ? persisted.clientAlias : "",
             clientGeneration: typeof persisted.clientGeneration === "number" ? persisted.clientGeneration : null,
             createdAt: typeof persisted.createdAt === "string" ? persisted.createdAt : "",
+            lastSeenAt: typeof persisted.lastSeenAt === "string"
+              ? persisted.lastSeenAt
+              : (typeof persisted.lastActivityAt === "string" ? persisted.lastActivityAt : ""),
             lastActivityAt: typeof persisted.lastActivityAt === "string" ? persisted.lastActivityAt : "",
             status: persisted.status === "closed" ? "closed" : "active",
           },
@@ -136,6 +150,19 @@ export class SessionStateStore {
     return Object.fromEntries(Object.entries(raw).filter(([, value]) => typeof value === "number")) as Record<string, number>;
   }
 
+  private sanitizeSettings(raw: unknown): PersistedTaskSyncState["settings"] {
+    const parsed = raw && typeof raw === "object" ? (raw as Record<string, unknown>) : {};
+    const disconnectAfterMinutes = typeof parsed.disconnectAfterMinutes === "number"
+      && Number.isFinite(parsed.disconnectAfterMinutes)
+      && parsed.disconnectAfterMinutes > 0
+      ? Math.floor(parsed.disconnectAfterMinutes)
+      : DEFAULT_PERSISTED_STATE.settings.disconnectAfterMinutes;
+
+    return {
+      disconnectAfterMinutes,
+    };
+  }
+
   async load(): Promise<PersistedTaskSyncState> {
     try {
       const raw = await readFile(this.filePath, "utf8");
@@ -144,6 +171,7 @@ export class SessionStateStore {
         version: 1,
         activeUiSessionId:
           typeof parsed.activeUiSessionId === "string" ? parsed.activeUiSessionId : DEFAULT_PERSISTED_STATE.activeUiSessionId,
+        settings: this.sanitizeSettings(parsed.settings),
         feedbackBySession: this.sanitizeFeedbackBySession(parsed.feedbackBySession),
         sessionMetadataById: this.sanitizeSessionMetadata(parsed.sessionMetadataById),
         manualAliasBySession: this.sanitizeStringRecord(parsed.manualAliasBySession),
@@ -172,6 +200,14 @@ export class SessionStateStore {
 
   async setActiveUiSessionId(sessionId: string): Promise<void> {
     this.state.activeUiSessionId = sessionId;
+    await this.save();
+  }
+
+  async setDisconnectAfterMinutes(minutes: number): Promise<void> {
+    const normalized = Number.isFinite(minutes) && minutes > 0
+      ? Math.floor(minutes)
+      : DEFAULT_PERSISTED_STATE.settings.disconnectAfterMinutes;
+    this.state.settings.disconnectAfterMinutes = normalized;
     await this.save();
   }
 

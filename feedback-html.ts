@@ -102,7 +102,7 @@ export const FEEDBACK_HTML = `<!DOCTYPE html>
   }
   :root[data-theme="light"] .session-item { background: var(--bg); }
   .session-item.active { border-color: var(--accent); }
-  .session-item.stale { opacity: 0.55; }
+  /* Legacy degraded/stale styles intentionally retained for compatibility */
   .session-item.alert { border-color: rgba(63,185,80,0.55); box-shadow: 0 0 0 2px rgba(63,185,80,0.08) inset; }
   :root[data-theme="light"] .session-item.alert { border-color: rgba(26,127,55,0.5); box-shadow: 0 0 0 2px rgba(26,127,55,0.06) inset; }
   .session-name { font-size: 0.82rem; font-weight: 600; color: var(--fg); margin-bottom: 0.15rem; }
@@ -125,13 +125,13 @@ export const FEEDBACK_HTML = `<!DOCTYPE html>
   .flag-queue { color: #ffd58a; border-color: rgba(255,196,99,0.45); background: rgba(255,196,99,0.14); }
   .flag-noqueue { color: #c9d1d9; border-color: rgba(139,148,158,0.45); background: rgba(139,148,158,0.1); }
   .flag-route { color: #d2b8ff; border-color: rgba(186,140,255,0.45); background: rgba(186,140,255,0.14); }
-  .flag-stale { color: #f0883e; border-color: rgba(240,136,62,0.45); background: rgba(240,136,62,0.14); }
+  /* Legacy degraded/stale styles intentionally retained for compatibility */
   :root[data-theme="light"] .flag-waiting { color: #1a7f37; border-color: rgba(26,127,55,0.4); background: rgba(26,127,55,0.08); }
   :root[data-theme="light"] .flag-idle { color: #0969da; border-color: rgba(9,105,218,0.3); background: rgba(9,105,218,0.06); }
   :root[data-theme="light"] .flag-queue { color: #9a6700; border-color: rgba(154,103,0,0.4); background: rgba(154,103,0,0.08); }
   :root[data-theme="light"] .flag-noqueue { color: #656d76; border-color: rgba(101,109,118,0.4); background: rgba(101,109,118,0.06); }
   :root[data-theme="light"] .flag-route { color: #8250df; border-color: rgba(130,80,223,0.4); background: rgba(130,80,223,0.08); }
-  :root[data-theme="light"] .flag-stale { color: #bc4c00; border-color: rgba(188,76,0,0.4); background: rgba(188,76,0,0.08); }
+  /* Legacy degraded/stale styles intentionally retained for compatibility */
   .session-alert-badge { display: inline-block; margin-left: 0.4rem; padding: 0.05rem 0.35rem; border-radius: 999px; font-size: 0.68rem; color: #b6f0bf; border: 1px solid rgba(63,185,80,0.45); background: rgba(63,185,80,0.14); }
   :root[data-theme="light"] .session-alert-badge { color: #1a7f37; border-color: rgba(26,127,55,0.4); background: rgba(26,127,55,0.08); }
   .session-buttons { display: flex; flex-wrap: wrap; gap: 0.4rem; margin-top: 0.3rem; }
@@ -399,7 +399,6 @@ ${FEEDBACK_HTML_ENHANCED_STYLES}
           <input id="active-session-input" placeholder="Session ID to set as default" />
           <button type="button" class="btn-secondary btn-small" onclick="setActiveFromInput()">Set Default</button>
           <button type="button" class="btn-secondary btn-small" onclick="loadSessions()">Refresh</button>
-          <button type="button" class="btn-secondary btn-small" onclick="pruneStaleSessions()" id="prune-stale-btn" title="Remove sessions inactive for over 1 hour">Prune Stale</button>
         </div>
         <label for="session-filter" class="sr-only" style="position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);border:0;">Filter sessions</label>
         <input id="session-filter" class="session-filter" placeholder="Filter sessions..." type="search" />
@@ -416,6 +415,10 @@ ${FEEDBACK_HTML_ENHANCED_STYLES}
               <option value="all">All sessions</option>
             </select>
           </label>
+          <label>Disconnect after (mins):
+            <input id="disconnect-after-minutes" type="number" min="1" max="1440" step="1" value="10" style="width:80px" />
+          </label>
+          <button type="button" class="btn-secondary btn-small" id="disconnect-after-save">Save</button>
           <button type="button" class="theme-toggle" id="theme-toggle" aria-label="Toggle light/dark theme">
             <span id="theme-icon">&#9790;</span> <span id="theme-label">Light</span>
           </button>
@@ -452,6 +455,8 @@ ${FEEDBACK_HTML_ENHANCED_STYLES}
   const themeToggleEl = document.getElementById('theme-toggle');
   const themeIconEl = document.getElementById('theme-icon');
   const themeLabelEl = document.getElementById('theme-label');
+  const disconnectAfterInputEl = document.getElementById('disconnect-after-minutes');
+  const disconnectAfterSaveEl = document.getElementById('disconnect-after-save');
 
   // ── SSE and state tracking ──
   let uiEventSource = null;
@@ -522,24 +527,23 @@ ${FEEDBACK_HTML_COMPOSER_HISTORY_SCRIPT}
     const routeFlag = isRoute
       ? '<span class="flag flag-route">route-target</span>'
       : '';
-    const staleThreshold = 60 * 60 * 1000;
-    const isStale = !s.waitingForFeedback && s.lastActivityAt && (Date.now() - new Date(s.lastActivityAt).getTime()) > staleThreshold;
-    const staleFlag = isStale ? '<span class="flag flag-stale" title="No activity for over 1 hour">stale</span>' : '';
     const sessionUrl = s.sessionUrl || ('/session/' + encodeURIComponent(s.sessionId));
     const metaCreated = s.createdAt ? formatTimeShort(new Date(s.createdAt)) : '';
-    const metaActivity = s.lastActivityAt ? formatElapsed(s.lastActivityAt) + ' ago' : '';
+    const metaActivity = s.lastSeenAt ? formatElapsed(s.lastSeenAt) + ' ago' : (s.lastActivityAt ? formatElapsed(s.lastActivityAt) + ' ago' : '');
+    const metaRequested = s.lastFeedbackRequestAt ? formatElapsed(s.lastFeedbackRequestAt) + ' ago' : '';
     const metaWait = (s.waitingForFeedback && s.waitStartedAt) ? formatElapsed(s.waitStartedAt) : '';
     const metaParts = [];
     if (metaCreated) metaParts.push('Created ' + metaCreated);
-    if (metaActivity) metaParts.push('Active ' + metaActivity);
+    if (metaActivity) metaParts.push('Seen ' + metaActivity);
+    if (metaRequested) metaParts.push('Feedback requested ' + metaRequested);
     if (metaWait) metaParts.push('Waiting ' + metaWait);
     const metaLine = metaParts.length > 0
       ? '<div class="session-meta">' + metaParts.join(' · ') + '</div>'
       : '';
-    return '<li class="session-item ' + (isRoute ? 'route-target ' : '') + (isActive ? 'active ' : '') + (isStale ? 'stale ' : '') + (hasAlert ? 'alert' : '') + '">'
+    return '<li class="session-item ' + (isRoute ? 'route-target ' : '') + (isActive ? 'active ' : '') + (hasAlert ? 'alert' : '') + '">'
       + '<div class="session-name">' + escapeHtml(displayName) + '</div>'
       + (alias ? ('<div class="session-id">' + escapeHtml(s.sessionId) + '</div>') : '')
-      + '<div class="session-flags">' + waitingFlag + queueFlag + routeFlag + staleFlag + (hasAlert ? ' <span class="session-alert-badge">new wait</span>' : '') + '</div>'
+      + '<div class="session-flags">' + waitingFlag + queueFlag + routeFlag + (hasAlert ? ' <span class="session-alert-badge">new wait</span>' : '') + '</div>'
       + metaLine
       + '<a class="session-link" href="' + sessionUrl + '" target="_blank" rel="noopener">Open in new window</a>'
       + '<div class="session-buttons">'
@@ -557,12 +561,8 @@ ${FEEDBACK_HTML_COMPOSER_HISTORY_SCRIPT}
     const filterText = sessionFilterEl.value.trim();
     if (sessions.length === 0) {
       sessionListEl.innerHTML = '<li class="empty-state"><div class="empty-state-icon">&#128268;</div>No active streamable sessions</li>';
-      updatePruneButton(0);
       return;
     }
-    const staleThreshold = 60 * 60 * 1000;
-    const staleCount = sessions.filter(function(s) { return !s.waitingForFeedback && s.lastActivityAt && (Date.now() - new Date(s.lastActivityAt).getTime()) > staleThreshold; }).length;
-    updatePruneButton(staleCount);
     const html = sessions.map((s) => renderSessionItem(s, active, filterText)).filter(Boolean).join('');
     if (!html) {
       sessionListEl.innerHTML = '<li class="empty-state">No sessions match filter</li>';
@@ -571,11 +571,11 @@ ${FEEDBACK_HTML_COMPOSER_HISTORY_SCRIPT}
     sessionListEl.innerHTML = html;
   }
 
-  function updatePruneButton(staleCount) {
-    const btn = document.getElementById('prune-stale-btn');
-    if (!btn) return;
-    btn.textContent = staleCount > 0 ? 'Prune Stale (' + staleCount + ')' : 'Prune Stale';
-    btn.disabled = staleCount === 0;
+  function updateDisconnectAfterInput(minutes) {
+    if (!disconnectAfterInputEl) return;
+    const numeric = Number(minutes);
+    if (!Number.isFinite(numeric) || numeric < 1) return;
+    disconnectAfterInputEl.value = String(Math.floor(numeric));
   }
 
   function detectNotificationTransitions(sessions, targetSessionId) {
@@ -671,7 +671,8 @@ ${FEEDBACK_HTML_COMPOSER_HISTORY_SCRIPT}
 
   function updateSessionMeta(active, sessions) {
     const routeHint = selectedSessionId ? (' | Route: ' + selectedSessionId) : '';
-    sessionMetaEl.textContent = 'Default (fallback): ' + active + routeHint + ' | Total sessions: ' + sessions.length;
+    const configured = disconnectAfterInputEl && disconnectAfterInputEl.value ? disconnectAfterInputEl.value : '10';
+    sessionMetaEl.textContent = 'Default (fallback): ' + active + routeHint + ' | Total sessions: ' + sessions.length + ' | Auto-disconnect: ' + configured + 'm';
   }
 
   // ── Session filter ──
@@ -694,6 +695,7 @@ ${FEEDBACK_HTML_COMPOSER_HISTORY_SCRIPT}
       const payload = await res.json();
       const sessions = Array.isArray(payload.sessions) ? payload.sessions : [];
       const active = payload.defaultUiSessionId || payload.activeUiSessionId || '(none)';
+      updateDisconnectAfterInput(payload.disconnectAfterMinutes);
 
       lastSessionsData = sessions;
       lastActiveId = active;
@@ -771,32 +773,30 @@ ${FEEDBACK_HTML_COMPOSER_HISTORY_SCRIPT}
     }
   }
 
-  // ── Prune stale sessions ──
-  async function pruneStaleSessions() {
-    const maxAgeMs = 60 * 60 * 1000;
-    if (!confirm('Remove all sessions inactive for over 1 hour?')) return;
+  async function saveDisconnectAfterMinutes() {
+    const raw = Number(disconnectAfterInputEl.value);
+    if (!Number.isFinite(raw) || raw < 1 || raw > 1440) {
+      showStatus('Disconnect-after must be between 1 and 1440 minutes', 'error');
+      return;
+    }
+
+    const minutes = Math.floor(raw);
     try {
-      const res = await fetch('/sessions/prune', {
+      const res = await fetch('/settings/disconnect-after', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ maxAgeMs }),
+        body: JSON.stringify({ minutes }),
       });
+
       if (!res.ok) {
-        showStatus('Failed to prune sessions', 'error');
+        showStatus('Failed to save disconnect-after setting', 'error');
         return;
       }
-      const data = await res.json();
-      if (data.prunedCount > 0) {
-        showStatus('Pruned ' + data.prunedCount + ' stale session(s)', 'success');
-        if (data.pruned.includes(selectedSessionId)) {
-          selectedSessionId = '';
-          activeSessionInputEl.value = '';
-          updateUrlSession('');
-        }
-        connectEvents();
-      } else {
-        showStatus('No stale sessions found', 'success');
-      }
+
+      const payload = await res.json();
+      updateDisconnectAfterInput(payload.disconnectAfterMinutes);
+      updateSessionMeta(lastActiveId, lastSessionsData || []);
+      showStatus('Disconnect-after updated to ' + payload.disconnectAfterMinutes + ' minutes', 'success');
     } catch (err) {
       showStatus('Error: ' + err.message, 'error');
     }
@@ -981,6 +981,7 @@ ${FEEDBACK_HTML_COMPOSER_HISTORY_SCRIPT}
     if (!payload || typeof payload !== 'object') return;
     const sessions = Array.isArray(payload.sessions) ? payload.sessions : [];
     const active = payload.activeUiSessionId || '(none)';
+    updateDisconnectAfterInput(payload.disconnectAfterMinutes);
 
     lastSessionsData = sessions;
     lastActiveId = active;
@@ -1042,6 +1043,17 @@ ${FEEDBACK_HTML_COMPOSER_HISTORY_SCRIPT}
   });
 
   // ── Bootstrap ──
+  if (disconnectAfterSaveEl) {
+    disconnectAfterSaveEl.addEventListener('click', saveDisconnectAfterMinutes);
+  }
+  if (disconnectAfterInputEl) {
+    disconnectAfterInputEl.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter') {
+        event.preventDefault();
+        saveDisconnectAfterMinutes();
+      }
+    });
+  }
   loadSessions();
   connectEvents();
 </script>
