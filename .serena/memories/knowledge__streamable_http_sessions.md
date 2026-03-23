@@ -1,34 +1,69 @@
-# Streamable HTTP Session Management
+Updated: 2026-03-20
 
-## Transport Model
-- Single endpoint (default /mcp) handles POST, GET, DELETE
-- Sessions identified by `Mcp-Session-Id` header (UUID)
-- Session state persisted in `.tasksync/session-state.json`
-- GET SSE stream for server→client notifications (reconnectable via Last-Event-ID)
-- POST SSE stream for tool call responses (kept alive by SSE keepalive)
+## Session health telemetry and stale detection v2 (implemented)
 
-## Session Lifecycle
-1. Client sends POST `initialize` → server returns Mcp-Session-Id
-2. Client sends GET to subscribe to notification stream
-3. Client sends POST `tools/call` for each tool invocation
-4. GET stream may disconnect/reconnect (~5 min cycles, auto-handled by SDK)
-5. POST for get_feedback is long-lived: stays open with keepalive until feedback arrives
-6. Session ends when client sends DELETE or connection drops permanently
+Files changed:
+- session-state-store.ts
+- index.ts
+- feedback-html.ts
 
-## Connection Resilience
-- **GET stream:** SDK auto-reconnects; transparent to agent
-- **POST stream:** Kept alive by SSE comment keepalive (`: keepalive\n\n` every 30s)
-- **Failure modes:** POST disconnect → error propagates to agent (SDK does NOT retry POST)
-- **Default mode:** No timeout, no [WAITING] — POST stays open indefinitely
-- **Heartbeat mode (--heartbeat):** Timeout fires → [WAITING] returned → agent re-POSTs
+### Why this changed
+Prior stale detection relied on `lastActivityAt` (updated on all requests), so repeated abort/reconnect traffic masked stale sessions.
 
-## Session State Store
-- File-based: `.tasksync/session-state.json`
-- Stores feedback text + pending waiter references per sessionId
-- Pruning: sessions not accessed for >24h are cleaned up
-- Structure: `{ sessions: { [id]: { feedback, waitingForFeedback, ... } } }`
+### Data model changes
+`PersistedSessionMetadata` now includes:
+- `lastSeenAt: string` (any request seen)
+- `lastHealthyAt: string` (meaningful healthy progress)
+- `lastDisconnectSignalAt: string | null`
+- `consecutiveAbortCount: number`
+- `disconnectSignalCount: number`
+- `health: "active" | "waiting" | "degraded" | "stale" | "closed"`
+- Existing `lastActivityAt` retained for compatibility; now tracks "seen" activity.
 
-## Event Replay
-- InMemoryStreamEventStore tracks SSE events with sequential IDs
-- Supports Last-Event-ID for GET stream resumption
-- POST response events are NOT resumable (no standard mechanism)
+### Health computation (index.ts)
+- Added thresholds:
+  - `UI_STALE_THRESHOLD_MS = 45m`
+  - `UI_DEGRADED_THRESHOLD_MS = 10m`
+  - `DEGRADE_ABORT_THRESHOLD = 5`
+- Added helpers:
+  - `getLastHealthyMs(...)`
+  - `computeSessionHealth(...)`
+  - `refreshSessionHealth(...)`
+  - `markSessionSeen(...)`
+  - `markSessionHealthy(...)`
+  - `markSessionDisconnectSignal(...)`
+
+### Signal mapping
+Healthy signals:
+- queued feedback returned to waiter (`queued_feedback_returned`)
+- live feedback returned (`live_feedback_returned`)
+- UI feedback submission (`ui_feedback_submitted`)
+- normal response close handling (`response_closed` / waiter clear path)
+
+Disconnect signals:
+- request aborted
+- response disconnected
+- wait interrupted
+- stream closed callback
+- non-healthy waiter clear reasons
+
+### Logging added/expanded
+- `session.health.transition` (from/to + counters + timestamps)
+- `session.health.healthy_signal`
+- `session.disconnect.signal`
+- Existing prune/delete logs enriched with telemetry context.
+
+### Pruning behavior changes
+- UI prune and auto-prune now use `lastHealthyAt` age (fallback to legacy `lastActivityAt` if absent).
+- UI prune response/log now records it is based on `lastHealthyAt`.
+
+### UI behavior changes (feedback-html.ts)
+- Session payload now consumes `health`, `staleAgeMs`, and disconnect counters.
+- New `degraded` visual state and badge.
+- `stale` now based on backend `health === "stale"` (not direct lastActivityAt time diff).
+- Metadata now shows Seen/Healthy times and disconnect signal count.
+- Prune prompt text updated to "no healthy activity" wording.
+
+### Notes
+- `sessionStateStore.markSessionClosed()` is now invoked on explicit MCP DELETE path.
+- Build passed (`npm run build`).
