@@ -1,16 +1,17 @@
 # Refactoring Backlog
 
-Updated: 2026-03-22
+Updated: 2026-03-24
 
 This tracks identified refactoring opportunities for the TaskSync codebase.
 
 ## Current State
 
-`index.ts` is 1400+ lines with mixed concerns. Should be modularized.
+`index.ts` reduced to ~1170 lines after SessionManager integration. `session-manager.ts` is 691 lines.
+Branch: `simple-prune` (commits `23fa631` + `c4220c2` on top of `main`/`fecc23d`).
 
 ## Planned Phases
 
-### Phase 1: Extract `session-manager.ts` ✅ IN PROGRESS
+### Phase 1: Extract `session-manager.ts` ✅ COMPLETE
 Extract all session lifecycle logic into dedicated module:
 - Session creation/destruction
 - State management (`streamableSessions`, `feedbackStateBySession`)
@@ -56,6 +57,8 @@ Move feedback flow logic:
 - [ ] Remove dangerous `resolveUiSessionTarget()` fallback chain
 - [ ] Strict session targeting (error if session doesn't exist)
 - [ ] Configurable prune threshold (from aggressive_prune branch)
+- [ ] Review `entry` fallback object (index.ts:1073-1082) — local StreamableSessionEntry not registered with SessionManager
+- [ ] Review auto-prune constants (4h→10min threshold, 5min→1min interval may be too aggressive)
 
 ### UI/UX
 - [ ] Show clearer error when selected session doesn't exist
@@ -64,4 +67,8 @@ Move feedback flow logic:
 
 ### Performance
 - [ ] Consider switching auto-prune interval based on session count
-- [ ] Debounce rapid state broadcasts
+- [ ] Debounce rapid state broadcasts (especially now that SessionManager broadcasts on every mutation)
+
+### Architectural Invariants (established 2026-03-24)
+- **SessionManager owns all state broadcasting** via `events.onStateChange()`. Callers in index.ts must NOT call `broadcastUiState()` after SessionManager methods.
+- **`appendHistory` called only by POST `/feedback` handler**, not by `resolvePendingFeedback`.
