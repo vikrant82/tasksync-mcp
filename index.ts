@@ -468,18 +468,11 @@ function slugifyForSessionId(clientAlias: string): string {
 async function resolvePendingFeedback(content: string, rawSessionId?: string, images?: ImageAttachment[]): Promise<boolean> {
   const sessionId = getSessionId(rawSessionId);
   const result = await sessionManager.deliverFeedback(sessionId, content, images);
-  broadcastUiState(sessionId);
-  
-  if (result.delivered) {
-    sessionManager.appendHistory(sessionId, content, images);
-    return true;
-  }
-  return false;
+  return result.delivered;
 }
 
 async function clearPendingWaiter(sessionId: string, reason: string, expectedRequestId?: string) {
   await sessionManager.clearPendingWaiter(sessionId, reason, expectedRequestId);
-  broadcastUiState(sessionId);
 }
 
 function attachPendingWaiterCleanup(
@@ -536,7 +529,6 @@ function registerServerHandlers(targetServer: Server) {
       const { name, arguments: args } = request.params;
       const sessionId = getSessionId(extra?.sessionId);
       await setActiveUiSessionId(sessionId);
-      broadcastUiState(sessionId);
       const feedbackState = getFeedbackState(sessionId);
       logEvent("debug", "mcp.tool.call", { tool: name, sessionId });
 
@@ -553,7 +545,6 @@ function registerServerHandlers(targetServer: Server) {
           // Check for queued feedback
           const queued = sessionManager.consumeQueuedFeedback(sessionId);
           if (queued !== null) {
-            broadcastUiState(sessionId);
             logEvent("info", "feedback.return.queued", {
               sessionId,
               contentLength: queued.content.length,
@@ -573,7 +564,6 @@ function registerServerHandlers(targetServer: Server) {
               resolve,
             });
           });
-          broadcastUiState(sessionId);
           logEvent("info", "feedback.waiting", {
             sessionId,
             requestId,
@@ -633,7 +623,6 @@ function registerServerHandlers(targetServer: Server) {
             // Clear the waiter if it's still ours
             if (sessionManager.isWaiting(sessionId)) {
               await sessionManager.clearPendingWaiter(sessionId, "timeout", requestId);
-              broadcastUiState(sessionId);
             }
             logEvent("info", "feedback.wait.timeout", {
               sessionId,
@@ -770,7 +759,6 @@ function startFeedbackUI() {
     }
 
     await setActiveUiSessionId(sessionId);
-    broadcastUiState(sessionId);
     logEvent("info", "ui.sessions.active.set", { sessionId });
     const currentActiveId = getActiveUiSessionId();
     res.json({
@@ -794,11 +782,9 @@ function startFeedbackUI() {
     const alias = normalizeAlias(req.body?.alias);
     if (alias) {
       sessionManager.setManualAlias(sessionId, alias);
-      broadcastUiState(sessionId);
       logEvent("info", "ui.sessions.alias.set", { sessionId, alias });
     } else {
       sessionManager.setManualAlias(sessionId, "");
-      broadcastUiState(sessionId);
       logEvent("info", "ui.sessions.alias.cleared", { sessionId });
     }
 
@@ -816,7 +802,6 @@ function startFeedbackUI() {
 
     try {
       await sessionManager.deleteSession(sessionId, "ui_delete");
-      broadcastUiState();
       logEvent("info", "ui.sessions.delete.ok", { sessionId });
       res.json({ ok: true });
     } catch (error) {
@@ -831,7 +816,6 @@ function startFeedbackUI() {
     
     try {
       const result = await sessionManager.manualPrune(maxAgeMs, forceIncludeWaiting);
-      broadcastUiState();
       logEvent("info", "ui.sessions.prune.complete", {
         maxAgeMs,
         prunedCount: result.pruned.length,
@@ -897,7 +881,6 @@ function startFeedbackUI() {
         sessionManager.appendHistory(normalizedSessionId, content, images.length > 0 ? images : undefined);
         await resolvePendingFeedback(content, normalizedSessionId, images.length > 0 ? images : undefined);
       }
-      broadcastUiState(normalizedSessionId);
 
       res.json({ ok: true, sessionId: normalizedSessionId });
     } catch (err) {
@@ -1040,7 +1023,6 @@ async function runStreamableHTTPServer() {
               clientAlias,
               clientGeneration
             );
-            broadcastUiState(initializedSessionId);
             logEvent("info", "mcp.session.created", {
               sessionId: initializedSessionId,
               transportId,
@@ -1056,7 +1038,6 @@ async function runStreamableHTTPServer() {
           const closedSessionId = createdTransport.sessionId;
           if (!closedSessionId) return;
           persistAsync("session.persistence.stream_closed", clearPendingWaiter(closedSessionId, "stream_closed"));
-          broadcastUiState(closedSessionId);
           const closedEntry = getSession(closedSessionId);
           // Stream closures can be transient (for example SSE reconnects).
           // Keep session state unless an explicit DELETE/session disconnect occurs.
@@ -1097,7 +1078,6 @@ async function runStreamableHTTPServer() {
 
       if (req.method === "DELETE" && sessionId) {
         await sessionManager.deleteSession(sessionId, "explicit_delete");
-        broadcastUiState();
         logEvent("info", "mcp.session.closed", {
           sessionId,
           transportId: entry.transportId,
