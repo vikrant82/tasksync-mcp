@@ -1,1 +1,0 @@
-Recovered loop behavior at m0302: reported unchanged state and resumed requesting next instruction. Server remains intentionally stopped on :3011; simplified auto-prune refactor remains complete/build-passing. Must use tasksync_get_feedback (not serena_list_memories) each turn.

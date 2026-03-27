@@ -1,0 +1,32 @@
+{
+  "name": "opencode-tasksync",
+  "version": "1.0.0",
+  "description": "TaskSync plugin for OpenCode: iterative human feedback loops for coding agents",
+  "license": "MIT",
+  "author": "TaskSync",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "watch": "tsc --watch"
+  },
+  "dependencies": {
+    "@tasksync/core": "*",
+    "zod": "^4.0.0"
+  },
+  "devDependencies": {
+    "@opencode-ai/plugin": "latest",
+    "@types/node": "^22",
+    "typescript": "^5.8.2"
+  }
+}

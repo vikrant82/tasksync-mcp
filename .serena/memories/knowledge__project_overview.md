@@ -1,22 +1,49 @@
-Updated 2026-03-10.
+# TaskSync Project Overview
 
-`tasksync-mcp` is a Streamable HTTP MCP server focused on iterative human feedback loops for coding agents through the `get_feedback` tool.
+Updated 2026-03-27.
 
-Key features:
-- `get_feedback` blocks until feedback arrives. Connection kept alive by SSE comment keepalive (`: keepalive\n\n` every 30s).
-- Default mode: no timeout, no [WAITING] — waits indefinitely with keepalive.
-- Legacy heartbeat mode (`--heartbeat`): returns [WAITING] on timeout, agent re-POSTs.
-- Feedback UI is embedded by default and uses SSE (`/events`) for live updates.
-- UI shows two-column layout: composer/history (left), sessions/settings (right).
-- Image support: paste, drag-drop, or attach images in the feedback UI. Images sent as base64 in `POST /feedback`, returned to agents as MCP `ImageContent` blocks alongside text. History shows thumbnails with lightbox zoom.
-- Markdown toolbar: formatting buttons (Bold, Italic, Code, etc.), keyboard shortcuts (Ctrl+B/I/K/`), Tab indent, auto-continue lists.
-- Per-session submitted feedback history stored in bounded form and exposed via `/feedback/history`.
-- Session/feedback metadata persisted locally in `.tasksync/session-state.json`.
-- Replay is transient/in-memory only; stale pre-restart session IDs are invalid.
-- Optional file logging via `TASKSYNC_LOG_FILE`; debug mode adds HTTP payload logging with request IDs.
+**TaskSync** enables iterative human feedback loops for coding agents via a blocking `get_feedback` tool and a web-based feedback UI.
 
-Agent prompt variants:
-- `task-sync-agent-opencode.md` / `task-sync-agent-copilot.md` — default (keepalive, no [WAITING])
-- `task-sync-agent-opencode-waiting.md` / `task-sync-agent-copilot-waiting.md` — heartbeat mode
+## Two Distribution Modes
 
-Stack: TypeScript, Node.js, Express, `@modelcontextprotocol/sdk`, Jest/ts-jest
+### 1. MCP Server (`tasksync-mcp` package)
+- Streamable HTTP MCP server with `get_feedback` tool
+- Works with any MCP client (OpenCode, Claude Desktop, Cursor, etc.)
+- SSE keepalive (`: keepalive\n\n` every 30s) keeps connection alive during blocking waits
+- Default: no timeout, waits indefinitely. Legacy heartbeat mode available (`--heartbeat`)
+- CLI: `node packages/mcp/dist/index.js --port=3011 --ui-port=3456`
+
+### 2. OpenCode Plugin (`opencode-tasksync` package)
+- Native OpenCode plugin with `get_feedback` as a plugin tool (no MCP prefix)
+- Injects `daemon` agent via config hook with full daemon loop prompt
+- Event-driven cleanup on `session.deleted`
+- Config: `"plugin": ["opencode-tasksync"]` in opencode.json
+- Env vars: `TASKSYNC_UI_PORT` (default 4596), `TASKSYNC_NO_BROWSER`
+
+### Shared Core (`@tasksync/core` package)
+Both modes share the same feedback engine, session management, UI server, and web frontend.
+
+## Key Features
+- **Feedback UI**: Two-column layout — composer/history (left), sessions/settings (right). SSE-powered live updates.
+- **Image support**: paste, drag-drop, or attach images. Sent as base64. MCP returns `ImageContent` blocks, plugin returns text description.
+- **Markdown toolbar**: formatting buttons, keyboard shortcuts, Tab indent, auto-continue lists.
+- **Session management**: Per-session feedback history, session aliases, auto-prune of stale sessions.
+- **Persistence**: `.tasksync/session-state.json` for metadata/history. Replay is transient/in-memory.
+- **Logging**: Optional file logging (`TASKSYNC_LOG_FILE`), configurable log levels.
+
+## Agent Prompts
+Located in `prompts/`:
+- `task-sync-agent-opencode.md` / `task-sync-agent-copilot.md` — default keepalive mode
+- Heartbeat variants available for legacy [WAITING] mode
+
+## Stack
+TypeScript, Node.js, Express, npm workspaces monorepo. Build: `tsc -b` with project references.
+
+## Repository Structure
+```
+packages/
+  core/          → @tasksync/core (shared foundation)
+  mcp/           → tasksync-mcp (MCP server)
+  opencode-plugin/ → opencode-tasksync (OpenCode plugin)
+prompts/         → Agent prompt markdown files
+```

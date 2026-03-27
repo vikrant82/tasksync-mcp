@@ -1,38 +1,29 @@
 {
-  "name": "tasksync-mcp",
-  "version": "1.0.11",
-  "description": "TaskSync MCP server for filesystem access and review feedback",
+  "private": true,
+  "name": "tasksync",
+  "version": "1.0.0",
+  "description": "TaskSync: iterative human feedback loops for coding agents",
   "license": "MIT",
   "author": "TaskSync",
   "type": "module",
-  "bin": {
-    "tasksync-mcp": "dist/index.js"
-  },
-  "files": [
-    "dist"
+  "workspaces": [
+    "packages/core",
+    "packages/mcp",
+    "packages/opencode-plugin"
   ],
   "scripts": {
-    "build": "tsc && shx chmod +x dist/*.js",
-    "prepare": "npm run build",
-    "watch": "tsc --watch",
+    "build": "npm run build --workspaces",
+    "build:core": "npm run build -w packages/core",
+    "build:mcp": "npm run build -w packages/mcp",
+    "build:plugin": "npm run build -w packages/opencode-plugin",
+    "watch": "npm run watch --workspaces --if-present",
     "test": "jest --config=jest.config.cjs --coverage",
-    "start": "node dist/index.js --port=3011",
+    "start": "npm run start -w packages/mcp",
     "dev": "npm run build && npm run start"
-  },
-  "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.17.0",
-    "diff": "^8.0.3",
-    "express": "^4.18.2",
-    "minimatch": "^10.0.1",
-    "zod-to-json-schema": "^3.23.5"
   },
   "devDependencies": {
     "@jest/globals": "^29.7.0",
-    "@types/diff": "^5.0.9",
-    "@types/express": "^4.17.17",
     "@types/jest": "^29.5.14",
-    "@types/minimatch": "^5.1.2",
-    "@types/node": "^22",
     "jest": "^30.2.0",
     "shx": "^0.3.4",
     "ts-jest": "^29.4.6",

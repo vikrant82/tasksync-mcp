@@ -13,7 +13,7 @@
         "ide-assistant",
         "--project",
         "tasksync-serena",
-        "/home/chauv/.config/opencode/tasksync-mcp"
+        "/Users/chauv/tasksync-mcp"
       ],
       "enabled": true
     }
