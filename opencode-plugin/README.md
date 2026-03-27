@@ -2,6 +2,10 @@
 
 OpenCode plugin for [TaskSync](https://github.com/vikrant82/tasksync-mcp) — adds a persistent daemon feedback loop to your AI coding agents.
 
+## Why use this instead of MCP?
+
+With MCP, you get a tool but agents don't know to use it — you'd have to paste daemon prompts into each agent manually. This plugin **injects feedback loop behavior automatically**: a dedicated `daemon` agent plus optional augmentation of your existing agents (`ask`, `build`, `plan`). Your agents start calling `get_feedback` between tasks with zero prompt editing.
+
 ## What it does
 
 - Adds a `get_feedback` tool that blocks until you submit feedback via the TaskSync web UI

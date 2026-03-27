@@ -1,6 +1,16 @@
 # OpenCode Plugin Guide
 
-The `opencode-tasksync` plugin integrates TaskSync directly into [OpenCode](https://opencode.ai) as a native plugin. It connects to the TaskSync server via REST and injects feedback loop behavior into your agents automatically.
+The `opencode-tasksync` plugin integrates TaskSync directly into [OpenCode](https://opencode.ai) as a native plugin — the recommended integration for OpenCode users.
+
+## Why Plugin over MCP?
+
+With MCP, you get a `tasksync_get_feedback` tool, but your agents don't know to call it. You'd need to paste a daemon prompt into every agent you want in the feedback loop.
+
+The plugin solves this automatically:
+
+- **Injects a `daemon` agent** with the complete feedback loop protocol — switch to it and it works.
+- **Augments your existing agents** (`ask`, `build`, `plan`, or `*` for all) so they gain feedback loop behavior without any prompt editing. Your coder starts calling `get_feedback` between tasks.
+- **Native lifecycle** — responds to OpenCode session events, handles cleanup, integrates with the config system idiomatically.
 
 ## Prerequisites
 
@@ -79,7 +89,7 @@ Configuration is merged with this priority (highest wins):
 | Variable | Maps to | Example |
 |----------|---------|---------|
 | `TASKSYNC_SERVER_URL` | `serverUrl` | `http://localhost:3456` |
-| `TASKSYNC_AUGMENT_AGENTS` | `augmentAgents` | `coder,ask` or `*` |
+| `TASKSYNC_AUGMENT_AGENTS` | `augmentAgents` | `ask,build,plan` or `*` |
 | `TASKSYNC_OVERLAY_STYLE` | `overlayStyle` | `full` or `compact` |
 
 ## Agent Behavior
@@ -110,8 +120,8 @@ You can inject the feedback loop into existing agents (like `coder`, `ask`, `bui
 | Value | Effect |
 |-------|--------|
 | `[]` | No augmentation (only `daemon` agent has the loop) |
-| `["coder"]` | Augment only the `coder` agent |
-| `["coder", "ask"]` | Augment specific agents |
+| `["ask", "build"]` | Augment specific agents |
+| `["ask", "build", "plan"]` | Augment multiple agents |
 | `["*"]` | Augment ALL agents (except `daemon`) |
 
 ### Overlay Styles

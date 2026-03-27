@@ -13,17 +13,29 @@ npx tasksync-mcp-http --port=3011 --ui-port=3456
 
 ## Two Integration Paths
 
-| | **OpenCode Plugin** | **MCP Server** |
+| | **OpenCode Plugin** ⭐ | **MCP Server** |
 |---|---|---|
 | **Best for** | [OpenCode](https://opencode.ai) users | VS Code Copilot, Claude Desktop, any MCP client |
 | **Setup** | Drop-in plugin, zero config | Configure MCP endpoint in your client |
-| **Agent injection** | Automatic (daemon agent + optional augmentation) | Manual (paste agent prompt) |
+| **Agent behavior** | Injects feedback loop into your existing agents | Manual — paste daemon prompt yourself |
 | **Feedback tool** | `get_feedback` (native tool) | `tasksync_get_feedback` (MCP-prefixed) |
 | **Image support** | Text only (OpenCode limitation) | Full MCP `ImageContent` blocks |
 
+### Why OpenCode users should prefer the plugin
+
+With **MCP**, you get a `tasksync_get_feedback` tool — but your agents don't know to use it unless you manually paste a daemon prompt into each one. Every agent you want in the feedback loop needs prompt surgery.
+
+With the **plugin**, feedback loop behavior is injected automatically:
+
+- **Dedicated `daemon` agent** — created for you with the full daemon loop prompt. Switch to it and it just works.
+- **Agent augmentation** — your existing agents (`ask`, `build`, `plan`, or `*` for all) gain feedback loop awareness via `augmentAgents` config. No prompt editing. The coder you already use starts calling `get_feedback` between tasks.
+- **Native lifecycle** — the plugin responds to OpenCode session events, handles cleanup, and integrates with the config system idiomatically.
+
+MCP is the universal fallback for non-OpenCode clients (VS Code Copilot, Claude Desktop, etc.).
+
 ## OpenCode Plugin
 
-Add to your `~/.config/opencode/opencode.json`:
+Add to `~/.config/opencode/opencode.json`:
 
 ```json
 {
@@ -43,24 +55,11 @@ Optionally configure in `~/.tasksync/config.json`:
 }
 ```
 
-See **[OpenCode Plugin Guide](docs/OPENCODE_PLUGIN.md)** for configuration and agent augmentation details.
+With `augmentAgents`, your existing agents gain feedback loop behavior without switching agents. See **[OpenCode Plugin Guide](docs/OPENCODE_PLUGIN.md)** for full details.
 
 ## MCP Server
 
 Point your MCP client at `http://localhost:3011/mcp`:
-
-### OpenCode (MCP mode)
-
-```json
-{
-  "mcp": {
-    "tasksync": {
-      "type": "remote",
-      "url": "http://localhost:3011/mcp"
-    }
-  }
-}
-```
 
 ### VS Code Copilot
 
@@ -70,6 +69,21 @@ Add to `.vscode/mcp.json`:
 {
   "servers": {
     "tasksync": {
+      "url": "http://localhost:3011/mcp"
+    }
+  }
+}
+```
+
+### OpenCode (MCP mode)
+
+If you prefer MCP over the plugin:
+
+```json
+{
+  "mcp": {
+    "tasksync": {
+      "type": "remote",
       "url": "http://localhost:3011/mcp"
     }
   }
