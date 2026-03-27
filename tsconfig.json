@@ -5,6 +5,7 @@
     "moduleResolution": "NodeNext",
     "module": "NodeNext",
     "target": "ES2022",
+    "lib": ["ES2024"],
     "strict": true,
     "esModuleInterop": true,
     "skipLibCheck": true,
@@ -12,5 +13,13 @@
   },
   "include": [
     "./**/*.ts"
+  ],
+  "exclude": [
+    "node_modules",
+    "dist",
+    "packages",
+    "opencode-plugin",
+    "__tests__",
+    "lib.ts"
   ]
 }

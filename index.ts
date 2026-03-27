@@ -18,6 +18,13 @@ import express from "express";
 import { FEEDBACK_HTML } from "./feedback-html.js";
 import { SessionStateStore, type ImageAttachment } from "./session-state-store.js";
 import { InMemoryStreamEventStore } from "./stream-event-store.js";
+import {
+  SessionManager,
+  type FeedbackChannelState,
+  type StreamableSessionEntry,
+  type PendingFeedbackResult,
+  type PendingWaiter,
+} from "./session-manager.js";
 
 const DEFAULT_TIMEOUT = 3_600_000; // safety-net timeout (1 hour); SSE keepalive prevents idle disconnects, this is the absolute max wait
 
@@ -38,56 +45,66 @@ const logFilePath = process.env.TASKSYNC_LOG_FILE?.trim() || "";
 const DEFAULT_FEEDBACK_SESSION = "__default__";
 const STREAM_RETRY_INTERVAL_MS = 2000;
 const KEEPALIVE_INTERVAL_MS = 30000; // 30s SSE comment keepalive to prevent HTTP connection timeout
-const AUTO_PRUNE_INTERVAL_MS = 5 * 60 * 1000; // check for auto-prune every 5 minutes
-const AUTO_PRUNE_STALE_THRESHOLD_MS = 4 * 60 * 60 * 1000; // auto-prune sessions inactive for >4 hours
+const AUTO_PRUNE_INTERVAL_MS = 60 * 1000; // check for auto-prune every 1 minute
+const DEFAULT_DISCONNECT_AFTER_MINUTES = 10; // prune sessions inactive for >10 minutes by default
+const MIN_DISCONNECT_AFTER_MINUTES = 1;
+const MAX_DISCONNECT_AFTER_MINUTES = 24 * 60; // 1 day
 const DEBUG_BODY_MAX_CHARS = 2000; // truncate debug-logged bodies to this length
 
-type FeedbackChannelState = {
-  pendingWaiter: {
-    waitId: string;
-    startedAt: string;
-    requestId: string;
-    resolve: (result: PendingFeedbackResult) => void;
-  } | null;
-  queuedFeedback: string | null;
-  queuedImages: ImageAttachment[] | null;
-  queuedAt: string | null;
-  latestFeedback: string;
-  history: {
-    role: "user";
-    content: string;
-    images?: ImageAttachment[];
-    createdAt: string;
-  }[];
-};
+// NOTE: FeedbackChannelState, StreamableSessionEntry, PendingFeedbackResult
+// are now imported from session-manager.ts
 
-const MAX_SESSION_HISTORY = 50;
-
-type StreamableSessionEntry = {
-  transport: StreamableHTTPServerTransport;
-  server: Server;
-  transportId: string;
-  clientAlias: string;
-  clientGeneration: number | null;
-  createdAt: string;
-  lastActivityAt: string;
-};
-
-type PendingFeedbackResult =
-  | { type: "feedback"; content: string; images?: ImageAttachment[] }
-  | { type: "closed"; reason: string };
-
-const feedbackStateBySession = new Map<string, FeedbackChannelState>();
-const streamableSessions = new Map<string, StreamableSessionEntry>();
-const manualAliasBySession = new Map<string, string>();
-const inferredAliasBySession = new Map<string, string>();
-const clientGenerationByAlias = new Map<string, number>();
 const sessionStateStore = new SessionStateStore();
 const streamEventStore = new InMemoryStreamEventStore();
 const requestContext = new AsyncLocalStorage<{ requestId: string; res?: express.Response }>();
-let activeUiSessionId = DEFAULT_FEEDBACK_SESSION;
 type UiEventClient = { res: express.Response; targetSessionId: string };
 const uiEventClients = new Set<UiEventClient>();
+
+// Session Manager - single source of truth for session state
+let sessionManager: SessionManager;
+
+// ==========================================================================
+// FACADE ACCESSORS - For gradual migration from inline maps to SessionManager
+// ==========================================================================
+
+function getActiveUiSessionId(): string {
+  return sessionManager.getActiveUiSessionId();
+}
+
+function setActiveUiSessionId(sessionId: string): Promise<void> {
+  return sessionManager.setActiveUiSession(sessionId);
+}
+
+function getFeedbackState(sessionId: string): FeedbackChannelState {
+  return sessionManager.getFeedbackState(sessionId);
+}
+
+function getSessionAlias(sessionId: string): string {
+  return sessionManager.getSessionAlias(sessionId);
+}
+
+function hasSession(sessionId: string): boolean {
+  return sessionManager.hasSession(sessionId);
+}
+
+function getSession(sessionId: string): StreamableSessionEntry | undefined {
+  return sessionManager.getSession(sessionId);
+}
+
+function getAllSessions(): Map<string, StreamableSessionEntry> {
+  return sessionManager.getAllSessions();
+}
+
+function resolveUiSessionTarget(rawSessionId?: string): string | null {
+  const requestedSessionId = rawSessionId && rawSessionId.trim().length > 0
+    ? getSessionId(rawSessionId)
+    : undefined;
+  return sessionManager.resolveTargetSession(requestedSessionId);
+}
+
+function markSessionActivity(sessionId: string, reason: string): void {
+  sessionManager.markActivity(sessionId, reason);
+}
 
 type LogLevel = "debug" | "info" | "warn" | "error";
 
@@ -260,21 +277,10 @@ function logDebugPretty(label: string, payload: unknown) {
   }
 }
 
-function resolveUiSessionTarget(rawSessionId?: string): string {
-  const requestedSessionId = getSessionId(rawSessionId || activeUiSessionId);
-  if (streamableSessions.has(requestedSessionId)) {
-    return requestedSessionId;
-  }
-  if (streamableSessions.has(activeUiSessionId)) {
-    return activeUiSessionId;
-  }
-  const firstLiveSessionId = streamableSessions.keys().next().value;
-  return typeof firstLiveSessionId === "string" ? firstLiveSessionId : DEFAULT_FEEDBACK_SESSION;
-}
-
 function buildUiStatePayload(targetSessionId?: string) {
-  const normalizedSessionId = resolveUiSessionTarget(targetSessionId);
-  const sessions = Array.from(streamableSessions.entries()).map(([sessionId, entry]) => {
+  const activeUiSessionId = getActiveUiSessionId();
+  const normalizedSessionId = resolveUiSessionTarget(targetSessionId) ?? activeUiSessionId;
+  const sessions = Array.from(getAllSessions().entries()).map(([sessionId, entry]) => {
     const state = getFeedbackState(sessionId);
     const alias = getSessionAlias(sessionId);
     return {
@@ -288,7 +294,7 @@ function buildUiStatePayload(targetSessionId?: string) {
       hasQueuedFeedback: Boolean(state.queuedFeedback),
     };
   });
-  const state = feedbackStateBySession.get(normalizedSessionId);
+  const state = sessionManager.getFeedbackState(normalizedSessionId);
   return {
     activeUiSessionId,
     sessionId: normalizedSessionId,
@@ -400,76 +406,8 @@ function getSessionId(rawSessionId?: string): string {
   return rawSessionId && rawSessionId.trim().length > 0 ? rawSessionId : DEFAULT_FEEDBACK_SESSION;
 }
 
-function getFeedbackState(sessionId: string): FeedbackChannelState {
-  const existing = feedbackStateBySession.get(sessionId);
-  if (existing) return existing;
-
-  const created: FeedbackChannelState = {
-    pendingWaiter: null,
-    queuedFeedback: null,
-    queuedImages: null,
-    queuedAt: null,
-    latestFeedback: "",
-    history: [],
-  };
-  feedbackStateBySession.set(sessionId, created);
-  logEvent("debug", "feedback.state.created", { sessionId });
-  return created;
-}
-
-function toPersistedFeedbackState(sessionId: string) {
-  const state = getFeedbackState(sessionId);
-  return {
-    queuedFeedback: state.queuedFeedback,
-    queuedImages: state.queuedImages,
-    queuedAt: state.queuedAt,
-    latestFeedback: state.latestFeedback,
-    history: state.history,
-  };
-}
-
-function appendFeedbackHistory(sessionId: string, content: string, images?: ImageAttachment[]) {
-  const state = getFeedbackState(sessionId);
-  state.history.push({
-    role: "user",
-    content,
-    ...(images && images.length > 0 ? { images } : {}),
-    createdAt: new Date().toISOString(),
-  });
-  if (state.history.length > MAX_SESSION_HISTORY) {
-    state.history.splice(0, state.history.length - MAX_SESSION_HISTORY);
-  }
-}
-
-async function persistFeedbackState(sessionId: string) {
-  await sessionStateStore.saveFeedbackState(sessionId, toPersistedFeedbackState(sessionId));
-  logEvent("debug", "session.state.persisted", { sessionId, kind: "feedback" });
-}
-
-async function persistActiveUiSession() {
-  await sessionStateStore.setActiveUiSessionId(activeUiSessionId);
-  logEvent("debug", "session.state.persisted", {
-    sessionId: activeUiSessionId,
-    kind: "active_ui_session",
-  });
-}
-
-async function persistSessionMetadata(sessionId: string, entry: StreamableSessionEntry) {
-  await sessionStateStore.saveSessionMetadata(sessionId, {
-    sessionId,
-    transportId: entry.transportId,
-    clientAlias: entry.clientAlias,
-    clientGeneration: entry.clientGeneration,
-    createdAt: entry.createdAt,
-    lastActivityAt: entry.lastActivityAt,
-    status: "active",
-  });
-  logEvent("debug", "session.state.persisted", {
-    sessionId,
-    kind: "session_metadata",
-    transportId: entry.transportId,
-  });
-}
+// NOTE: getFeedbackState, toPersistedFeedbackState, appendFeedbackHistory, persistFeedbackState,
+// persistActiveUiSession, persistSessionMetadata are now handled by SessionManager
 
 function persistAsync(task: string, work: Promise<void>) {
   void work.catch((error) => {
@@ -477,76 +415,18 @@ function persistAsync(task: string, work: Promise<void>) {
   });
 }
 
-async function reassociatePersistedStateForAlias(sessionId: string, clientAlias: string) {
-  const destState = getFeedbackState(sessionId);
-  for (const [otherId, srcState] of feedbackStateBySession.entries()) {
-    if (otherId === sessionId) continue;
-    if (getSessionAlias(otherId) !== clientAlias) continue;
-    if (!srcState.queuedFeedback || destState.queuedFeedback) continue;
+// NOTE: reassociatePersistedStateForAlias, hydratePersistedState, nextClientGeneration
+// are now handled internally by SessionManager.initialize() and SessionManager methods
 
-    destState.queuedFeedback = srcState.queuedFeedback;
-    destState.queuedAt = srcState.queuedAt;
-    srcState.queuedFeedback = null;
-    srcState.queuedAt = null;
-
-    await persistFeedbackState(sessionId);
-    await persistFeedbackState(otherId);
-
-    logEvent("info", "session.reassociated", {
-      fromSessionId: otherId,
-      toSessionId: sessionId,
-      clientAlias,
-      queuedAt: destState.queuedAt,
-      contentLength: destState.queuedFeedback.length,
-    });
-    return;
-  }
-}
-
-async function hydratePersistedState() {
-  const snapshot = await sessionStateStore.load();
-
-  activeUiSessionId = getSessionId(snapshot.activeUiSessionId);
-
-  for (const [sessionId, persistedState] of Object.entries(snapshot.feedbackBySession)) {
-    feedbackStateBySession.set(sessionId, {
-      pendingWaiter: null,
-      queuedFeedback: persistedState.queuedFeedback,
-      queuedImages: persistedState.queuedImages ?? null,
-      queuedAt: persistedState.queuedAt,
-      latestFeedback: persistedState.latestFeedback,
-      history: Array.isArray(persistedState.history) ? persistedState.history : [],
-    });
-  }
-
-  for (const [sessionId, alias] of Object.entries(snapshot.manualAliasBySession)) {
-    manualAliasBySession.set(sessionId, alias);
-  }
-
-  for (const [sessionId, alias] of Object.entries(snapshot.inferredAliasBySession)) {
-    inferredAliasBySession.set(sessionId, alias);
-  }
-
-  for (const [alias, generation] of Object.entries(snapshot.clientGenerationByAlias)) {
-    clientGenerationByAlias.set(alias, generation);
-  }
-
-  logEvent("info", "session.state.hydrated", {
-    feedbackSessions: feedbackStateBySession.size,
-    liveSessions: streamableSessions.size,
-    persistedSessionMetadata: Object.keys(snapshot.sessionMetadataById).length,
-    manualAliases: manualAliasBySession.size,
-    inferredAliases: inferredAliasBySession.size,
-    activeUiSessionId,
-  });
-}
-
-async function nextClientGeneration(alias: string): Promise<number> {
-  const nextGeneration = (clientGenerationByAlias.get(alias) ?? 0) + 1;
-  clientGenerationByAlias.set(alias, nextGeneration);
-  await sessionStateStore.setClientGeneration(alias, nextGeneration);
-  return nextGeneration;
-}
+/**
+ * Mark a session as having meaningful activity.
+ * This should be called on:
+ * - get_feedback tool calls
+ * - Feedback delivery/queueing
+ * NOT on:
+ * - MCP polling/keep-alive requests
+ */
+// NOTE: markSessionActivity is now handled by SessionManager (see facade function at top)
 
 function formatFeedbackResponse(content: string, images?: ImageAttachment[]): { content: ({ type: "text"; text: string } | { type: "image"; data: string; mimeType: string })[] } {
   const blocks: ({ type: "text"; text: string } | { type: "image"; data: string; mimeType: string })[] = [];
@@ -564,9 +444,7 @@ function normalizeAlias(raw: unknown): string {
   return raw.trim().replace(/\s+/g, " ").slice(0, 80);
 }
 
-function getSessionAlias(sessionId: string): string {
-  return manualAliasBySession.get(sessionId) || inferredAliasBySession.get(sessionId) || "";
-}
+// NOTE: getSessionAlias is now handled by SessionManager (see facade function at top)
 
 function inferAliasFromInitializeBody(body: unknown): string {
   if (!body || typeof body !== "object") return "";
@@ -589,68 +467,12 @@ function slugifyForSessionId(clientAlias: string): string {
 
 async function resolvePendingFeedback(content: string, rawSessionId?: string, images?: ImageAttachment[]): Promise<boolean> {
   const sessionId = getSessionId(rawSessionId);
-  const state = getFeedbackState(sessionId);
-  const queuedAt = new Date().toISOString();
-  state.latestFeedback = content;
-  logEvent("debug", "feedback.received", {
-    sessionId,
-    contentLength: content.length,
-    imageCount: images?.length ?? 0,
-    hasPendingWaiter: Boolean(state.pendingWaiter),
-    pendingWaitId: state.pendingWaiter?.waitId,
-  });
-
-  if (state.pendingWaiter) {
-    const waiter = state.pendingWaiter;
-    state.pendingWaiter = null;
-    state.queuedAt = null;
-    state.queuedImages = null;
-    await persistFeedbackState(sessionId);
-    broadcastUiState(sessionId);
-    waiter.resolve({ type: "feedback", content, ...(images && images.length > 0 ? { images } : {}) });
-    logEvent("info", "feedback.delivered.to_waiter", {
-      sessionId,
-      requestId: waiter.requestId,
-      waitId: waiter.waitId,
-      waitStartedAt: waiter.startedAt,
-      waitDurationMs: Date.now() - Date.parse(waiter.startedAt),
-      contentLength: content.length,
-      imageCount: images?.length ?? 0,
-    });
-    return true;
-  }
-
-  state.queuedFeedback = content;
-  state.queuedImages = images && images.length > 0 ? images : null;
-  state.queuedAt = queuedAt;
-  await persistFeedbackState(sessionId);
-  broadcastUiState(sessionId);
-  logEvent("info", "feedback.queued", {
-    sessionId,
-    queuedAt,
-    contentLength: content.length,
-    imageCount: images?.length ?? 0,
-  });
-  return false;
+  const result = await sessionManager.deliverFeedback(sessionId, content, images);
+  return result.delivered;
 }
 
 async function clearPendingWaiter(sessionId: string, reason: string, expectedRequestId?: string) {
-  const state = feedbackStateBySession.get(sessionId);
-  if (!state || !state.pendingWaiter) return;
-  const waiter = state.pendingWaiter;
-  if (expectedRequestId && waiter.requestId !== expectedRequestId) return;
-  state.pendingWaiter = null;
-  await persistFeedbackState(sessionId);
-  broadcastUiState(sessionId);
-  waiter.resolve({ type: "closed", reason });
-  logEvent("warn", "feedback.waiter.cleared", {
-    sessionId,
-    reason,
-    requestId: waiter.requestId,
-    waitId: waiter.waitId,
-    waitStartedAt: waiter.startedAt,
-    waitDurationMs: Date.now() - Date.parse(waiter.startedAt),
-  });
+  await sessionManager.clearPendingWaiter(sessionId, reason, expectedRequestId);
 }
 
 function attachPendingWaiterCleanup(
@@ -706,9 +528,7 @@ function registerServerHandlers(targetServer: Server) {
     try {
       const { name, arguments: args } = request.params;
       const sessionId = getSessionId(extra?.sessionId);
-      activeUiSessionId = sessionId;
-      await persistActiveUiSession();
-      broadcastUiState(sessionId);
+      await setActiveUiSessionId(sessionId);
       const feedbackState = getFeedbackState(sessionId);
       logEvent("debug", "mcp.tool.call", { tool: name, sessionId });
 
@@ -719,38 +539,31 @@ function registerServerHandlers(targetServer: Server) {
             throw new Error(`Invalid arguments for get_feedback: ${parsed.error}`);
           }
 
-          if (feedbackState.queuedFeedback !== null) {
-            const content = feedbackState.queuedFeedback;
-            const images = feedbackState.queuedImages ?? undefined;
-            const queuedAt = feedbackState.queuedAt;
-            feedbackState.queuedFeedback = null;
-            feedbackState.queuedImages = null;
-            feedbackState.queuedAt = null;
-            await persistFeedbackState(sessionId);
-            broadcastUiState(sessionId);
+          // Mark meaningful activity - get_feedback is a signal that the agent is active
+          markSessionActivity(sessionId, "get_feedback");
+
+          // Check for queued feedback
+          const queued = sessionManager.consumeQueuedFeedback(sessionId);
+          if (queued !== null) {
             logEvent("info", "feedback.return.queued", {
               sessionId,
-              queuedAt,
-              queuedDurationMs: queuedAt ? Date.now() - Date.parse(queuedAt) : undefined,
-              contentLength: content.length,
-              imageCount: images?.length ?? 0,
+              contentLength: queued.content.length,
+              imageCount: queued.images?.length ?? 0,
             });
-            return formatFeedbackResponse(content, images);
+            return formatFeedbackResponse(queued.content, queued.images);
           }
 
           const waitId = randomUUID();
           const waitStartedAt = new Date().toISOString();
           const requestId = requestContext.getStore()?.requestId ?? randomUUID();
           const feedbackPromise = new Promise<PendingFeedbackResult>((resolve) => {
-            feedbackState.pendingWaiter = {
+            sessionManager.setWaiter(sessionId, {
               waitId,
               startedAt: waitStartedAt,
               requestId,
               resolve,
-            };
+            });
           });
-          await persistFeedbackState(sessionId);
-          broadcastUiState(sessionId);
           logEvent("info", "feedback.waiting", {
             sessionId,
             requestId,
@@ -807,11 +620,9 @@ function registerServerHandlers(targetServer: Server) {
 
           if (result === null) {
             clearKeepalive("timeout");
-            const timedOutWaiter = feedbackState.pendingWaiter;
-            if (timedOutWaiter?.waitId === waitId) {
-              feedbackState.pendingWaiter = null;
-              await persistFeedbackState(sessionId);
-              broadcastUiState(sessionId);
+            // Clear the waiter if it's still ours
+            if (sessionManager.isWaiting(sessionId)) {
+              await sessionManager.clearPendingWaiter(sessionId, "timeout", requestId);
             }
             logEvent("info", "feedback.wait.timeout", {
               sessionId,
@@ -893,11 +704,11 @@ function startFeedbackUI() {
   installDebugHttpLogging(feedbackApp, "ui.http");
 
   function renderHtml(viewSessionId?: string): string {
-    const displaySessionId = viewSessionId || activeUiSessionId;
+    const displaySessionId = viewSessionId || getActiveUiSessionId();
     const displayAlias = getSessionAlias(displaySessionId);
     const displayLabel = displayAlias ? `${displayAlias} (${displaySessionId})` : displaySessionId;
     return FEEDBACK_HTML
-      .replace("ACTIVE_SESSION_INFO", `Active session: ${displayLabel} | Known sessions: ${streamableSessions.size}`);
+      .replace("ACTIVE_SESSION_INFO", `Active session: ${displayLabel} | Known sessions: ${getAllSessions().size}`);
   }
 
   feedbackApp.get("/", (_req, res) => {
@@ -910,7 +721,7 @@ function startFeedbackUI() {
 
   feedbackApp.get("/events", (req, res) => {
     const targetSessionId = typeof req.query.sessionId === "string" ? req.query.sessionId.trim() : "";
-    const resolvedSessionId = resolveUiSessionTarget(targetSessionId);
+    const resolvedSessionId = resolveUiSessionTarget(targetSessionId) ?? getActiveUiSessionId();
     res.setHeader("Content-Type", "text/event-stream");
     res.setHeader("Cache-Control", "no-cache, no-transform");
     res.setHeader("Connection", "keep-alive");
@@ -925,8 +736,8 @@ function startFeedbackUI() {
 
   feedbackApp.get("/feedback/history", (req, res) => {
     const querySession = typeof req.query.sessionId === "string" ? req.query.sessionId : "";
-    const normalizedSessionId = resolveUiSessionTarget(querySession.trim());
-    const state = feedbackStateBySession.get(normalizedSessionId);
+    const normalizedSessionId = resolveUiSessionTarget(querySession.trim()) ?? getActiveUiSessionId();
+    const state = getFeedbackState(normalizedSessionId);
     res.json({ sessionId: normalizedSessionId, history: state?.history || [] });
   });
 
@@ -941,20 +752,19 @@ function startFeedbackUI() {
 
   const setDefaultSessionHandler = async (req: express.Request, res: express.Response) => {
     const sessionId = typeof req.body?.sessionId === "string" ? req.body.sessionId.trim() : "";
-    if (!sessionId || !streamableSessions.has(sessionId)) {
+    if (!sessionId || !hasSession(sessionId)) {
       logEvent("warn", "ui.sessions.active.invalid", { sessionId });
       res.status(400).json({ error: "Unknown sessionId" });
       return;
     }
 
-    activeUiSessionId = sessionId;
-    await persistActiveUiSession();
-    broadcastUiState(sessionId);
+    await setActiveUiSessionId(sessionId);
     logEvent("info", "ui.sessions.active.set", { sessionId });
+    const currentActiveId = getActiveUiSessionId();
     res.json({
       ok: true,
-      defaultUiSessionId: activeUiSessionId,
-      activeUiSessionId,
+      defaultUiSessionId: currentActiveId,
+      activeUiSessionId: currentActiveId,
     });
   };
 
@@ -963,7 +773,7 @@ function startFeedbackUI() {
 
   feedbackApp.post("/sessions/:sessionId/alias", async (req, res) => {
     const sessionId = req.params.sessionId;
-    if (!sessionId || !streamableSessions.has(sessionId)) {
+    if (!sessionId || !hasSession(sessionId)) {
       logEvent("warn", "ui.sessions.alias.invalid", { sessionId });
       res.status(404).json({ error: "Session not found" });
       return;
@@ -971,14 +781,10 @@ function startFeedbackUI() {
 
     const alias = normalizeAlias(req.body?.alias);
     if (alias) {
-      manualAliasBySession.set(sessionId, alias);
-      await sessionStateStore.setManualAlias(sessionId, alias);
-      broadcastUiState(sessionId);
+      sessionManager.setManualAlias(sessionId, alias);
       logEvent("info", "ui.sessions.alias.set", { sessionId, alias });
     } else {
-      manualAliasBySession.delete(sessionId);
-      await sessionStateStore.setManualAlias(sessionId, null);
-      broadcastUiState(sessionId);
+      sessionManager.setManualAlias(sessionId, "");
       logEvent("info", "ui.sessions.alias.cleared", { sessionId });
     }
 
@@ -987,7 +793,7 @@ function startFeedbackUI() {
 
   feedbackApp.delete("/sessions/:sessionId", async (req, res) => {
     const sessionId = req.params.sessionId;
-    const session = streamableSessions.get(sessionId);
+    const session = getSession(sessionId);
     if (!session) {
       logEvent("warn", "ui.sessions.delete.missing", { sessionId });
       res.status(404).json({ error: "Session not found" });
@@ -995,18 +801,7 @@ function startFeedbackUI() {
     }
 
     try {
-      await session.transport.close();
-      await clearPendingWaiter(sessionId, "ui_delete");
-      streamableSessions.delete(sessionId);
-      feedbackStateBySession.delete(sessionId);
-      manualAliasBySession.delete(sessionId);
-      inferredAliasBySession.delete(sessionId);
-      if (activeUiSessionId === sessionId) {
-        activeUiSessionId = DEFAULT_FEEDBACK_SESSION;
-        await persistActiveUiSession();
-      }
-      await sessionStateStore.deleteSession(sessionId);
-      broadcastUiState();
+      await sessionManager.deleteSession(sessionId, "ui_delete");
       logEvent("info", "ui.sessions.delete.ok", { sessionId });
       res.json({ ok: true });
     } catch (error) {
@@ -1017,41 +812,37 @@ function startFeedbackUI() {
 
   feedbackApp.post("/sessions/prune", async (req, res) => {
     const maxAgeMs = typeof req.body?.maxAgeMs === "number" ? req.body.maxAgeMs : 60 * 60 * 1000;
-    const now = Date.now();
-    const pruned: string[] = [];
-    const errors: string[] = [];
-
-    for (const [sessionId, session] of streamableSessions.entries()) {
-      const lastActivity = session.lastActivityAt ? new Date(session.lastActivityAt).getTime() : now;
-      const age = now - lastActivity;
-      if (age < maxAgeMs) continue;
-
-      // Skip sessions actively waiting for feedback — they're not truly stale
-      const state = feedbackStateBySession.get(sessionId);
-      if (state?.pendingWaiter) continue;
-
-      try {
-        await session.transport.close();
-        await clearPendingWaiter(sessionId, "ui_prune");
-        streamableSessions.delete(sessionId);
-        feedbackStateBySession.delete(sessionId);
-        manualAliasBySession.delete(sessionId);
-        inferredAliasBySession.delete(sessionId);
-        if (activeUiSessionId === sessionId) {
-          activeUiSessionId = DEFAULT_FEEDBACK_SESSION;
-          await persistActiveUiSession();
-        }
-        await sessionStateStore.deleteSession(sessionId);
-        pruned.push(sessionId);
-        logEvent("info", "ui.sessions.prune.ok", { sessionId, ageMs: age });
-      } catch (error) {
-        errors.push(sessionId);
-        logEvent("error", "ui.sessions.prune.error", { sessionId, error: String(error) });
-      }
+    const forceIncludeWaiting = req.body?.forceIncludeWaiting === true;
+    
+    try {
+      const result = await sessionManager.manualPrune(maxAgeMs, forceIncludeWaiting);
+      logEvent("info", "ui.sessions.prune.complete", {
+        maxAgeMs,
+        prunedCount: result.pruned.length,
+        errorCount: result.errors.length,
+      });
+      res.json({
+        ok: true,
+        pruned: result.pruned,
+        errors: result.errors,
+      });
+    } catch (error) {
+      logEvent("error", "ui.sessions.prune.error", { error: String(error) });
+      res.status(500).json({ error: String(error) });
     }
+  });
 
-    broadcastUiState();
-    res.json({ ok: true, pruned, errors, prunedCount: pruned.length });
+  // Settings endpoints
+  feedbackApp.get("/settings", (_req, res) => {
+    res.json({
+      disconnectAfterMinutes: sessionManager.getDisconnectAfterMinutes(),
+    });
+  });
+
+  feedbackApp.post("/settings/disconnect-after", async (req, res) => {
+    const minutes = typeof req.body?.minutes === "number" ? req.body.minutes : DEFAULT_DISCONNECT_AFTER_MINUTES;
+    await sessionManager.setDisconnectAfterMinutes(minutes);
+    res.json({ ok: true, disconnectAfterMinutes: sessionManager.getDisconnectAfterMinutes() });
   });
 
   feedbackApp.post("/feedback", async (req, res) => {
@@ -1065,13 +856,21 @@ function startFeedbackUI() {
       const requestedSessionId = typeof req.body?.sessionId === "string" ? req.body.sessionId.trim() : "";
       const normalizedSessionId = resolveUiSessionTarget(requestedSessionId);
 
-      const state = getFeedbackState(normalizedSessionId);
-      state.latestFeedback = content;
-      const hasContent = content.trim().length > 0 || images.length > 0;
-      if (hasContent) {
-        appendFeedbackHistory(normalizedSessionId, content, images.length > 0 ? images : undefined);
+      // Strict session targeting: fail if session doesn't exist
+      if (!normalizedSessionId) {
+        logEvent("warn", "ui.feedback.post.no_session", {
+          requestedSessionId,
+          availableSessions: Array.from(getAllSessions().keys()),
+        });
+        res.status(400).json({
+          error: requestedSessionId
+            ? `Session "${requestedSessionId}" not found`
+            : "No active session to receive feedback"
+        });
+        return;
       }
-      await persistFeedbackState(normalizedSessionId);
+
+      const hasContent = content.trim().length > 0 || images.length > 0;
       logEvent("info", "ui.feedback.post", {
         requestedSessionId,
         targetSessionId: normalizedSessionId,
@@ -1079,13 +878,119 @@ function startFeedbackUI() {
         imageCount: images.length,
       });
       if (hasContent) {
+        sessionManager.appendHistory(normalizedSessionId, content, images.length > 0 ? images : undefined);
         await resolvePendingFeedback(content, normalizedSessionId, images.length > 0 ? images : undefined);
       }
-      broadcastUiState(normalizedSessionId);
 
       res.json({ ok: true, sessionId: normalizedSessionId });
     } catch (err) {
       logEvent("error", "ui.feedback.post.error", { error: String(err) });
+      res.status(500).json({ error: String(err) });
+    }
+  });
+
+  // ── Plugin API endpoints ──────────────────────────────────────────
+  // These endpoints allow external clients (e.g. OpenCode plugin) to
+  // register sessions and long-poll for feedback without MCP transport.
+
+  feedbackApp.post("/api/sessions", async (req, res) => {
+    try {
+      const sessionId = typeof req.body?.sessionId === "string" ? req.body.sessionId.trim() : "";
+      if (!sessionId) {
+        res.status(400).json({ error: "sessionId is required" });
+        return;
+      }
+
+      // Idempotent: if session already exists, just return ok
+      if (hasSession(sessionId)) {
+        res.json({ ok: true, sessionId, existing: true });
+        return;
+      }
+
+      const alias = typeof req.body?.alias === "string" ? normalizeAlias(req.body.alias) : "";
+      const transportId = `plugin-${sessionId}`;
+
+      sessionManager.createSession(
+        sessionId,
+        undefined, // no MCP transport
+        undefined, // no MCP server
+        transportId,
+        alias || sessionId,
+        null
+      );
+
+      if (alias) {
+        sessionManager.setInferredAlias(sessionId, alias);
+      }
+
+      logEvent("info", "api.session.registered", { sessionId, alias: alias || undefined });
+      res.json({ ok: true, sessionId, existing: false });
+    } catch (err) {
+      logEvent("error", "api.session.register.error", { error: String(err) });
+      res.status(500).json({ error: String(err) });
+    }
+  });
+
+  feedbackApp.post("/api/wait/:sessionId", async (req, res) => {
+    const sessionId = req.params.sessionId?.trim();
+    if (!sessionId) {
+      res.status(400).json({ error: "sessionId is required" });
+      return;
+    }
+
+    // Auto-register session if not exists (idempotent)
+    if (!hasSession(sessionId)) {
+      const transportId = `plugin-${sessionId}`;
+      sessionManager.createSession(sessionId, undefined, undefined, transportId, sessionId, null);
+      logEvent("info", "api.wait.auto_registered", { sessionId });
+    }
+
+    // Check queued feedback first — return immediately if found
+    const queued = sessionManager.consumeQueuedFeedback(sessionId);
+    if (queued) {
+      logEvent("info", "api.wait.queued", { sessionId, contentLength: queued.content.length });
+      res.json({ type: "feedback", content: queued.content, images: queued.images || null });
+      return;
+    }
+
+    // Set up long-poll waiter
+    const waitId = crypto.randomUUID();
+    const { promise, resolve } = Promise.withResolvers<PendingFeedbackResult>();
+
+    sessionManager.setWaiter(sessionId, {
+      waitId,
+      startedAt: new Date().toISOString(),
+      requestId: waitId,
+      resolve,
+    });
+
+    logEvent("info", "api.wait.started", { sessionId, waitId });
+
+    // Clean up if client disconnects (plugin abort signal cancels fetch).
+    // IMPORTANT: Listen on `res`, not `req`. The request stream is already consumed
+    // by Express's body parser, so req's 'close' fires immediately. The response's
+    // 'close' fires when the TCP connection drops (client disconnect/abort).
+    let resolved = false;
+    res.on("close", () => {
+      if (!resolved) {
+        sessionManager.clearPendingWaiter(sessionId, "client_disconnected", waitId);
+        logEvent("info", "api.wait.client_disconnected", { sessionId, waitId });
+      }
+    });
+
+    try {
+      const result = await promise;
+      resolved = true;
+      logEvent("info", "api.wait.resolved", {
+        sessionId,
+        waitId,
+        type: result.type,
+        contentLength: result.type === "feedback" ? result.content.length : 0,
+      });
+      res.json(result);
+    } catch (err) {
+      resolved = true;
+      logEvent("error", "api.wait.error", { sessionId, waitId, error: String(err) });
       res.status(500).json({ error: String(err) });
     }
   });
@@ -1095,38 +1000,9 @@ function startFeedbackUI() {
     console.error(`Feedback UI running at http://localhost:${uiPort}`);
   });
 
-  // Auto-prune very old stale sessions periodically
-  setInterval(() => {
-    const now = Date.now();
-    let pruned = 0;
-    for (const [sessionId, state] of feedbackStateBySession.entries()) {
-      const meta = sessionStateStore.getSnapshot().sessionMetadataById[sessionId];
-      const lastActivity = meta?.lastActivityAt ? new Date(meta.lastActivityAt).getTime() : 0;
-      const isWaiting = Boolean(state.pendingWaiter);
-      if (!isWaiting && lastActivity > 0 && (now - lastActivity) > AUTO_PRUNE_STALE_THRESHOLD_MS) {
-        feedbackStateBySession.delete(sessionId);
-        streamableSessions.delete(sessionId);
-        sessionStateStore.deleteSession(sessionId);
-        pruned++;
-        logEvent("info", "session.auto-pruned", { sessionId, inactiveMs: now - lastActivity });
-      }
-    }
-    // Also clean up orphaned persisted sessions that are no longer live
-    const persistedSessions = sessionStateStore.getSnapshot().sessionMetadataById;
-    for (const [sessionId, meta] of Object.entries(persistedSessions)) {
-      if (streamableSessions.has(sessionId)) continue; // still live
-      if (feedbackStateBySession.has(sessionId)) continue; // already handled above
-      const lastActivity = meta?.lastActivityAt ? new Date(meta.lastActivityAt).getTime() : 0;
-      if (lastActivity > 0 && (now - lastActivity) > AUTO_PRUNE_STALE_THRESHOLD_MS) {
-        sessionStateStore.deleteSession(sessionId);
-        pruned++;
-        logEvent("info", "session.auto-pruned.orphaned", { sessionId, inactiveMs: now - lastActivity });
-      }
-    }
-    if (pruned > 0) {
-      broadcastUiState();
-    }
-  }, AUTO_PRUNE_INTERVAL_MS);
+  // Auto-prune stale sessions periodically
+  // NOTE: Auto-prune is now handled by SessionManager.startAutoPrune()
+  // The SessionManager runs prune on interval and broadcasts state changes via events
 
   setTimeout(() => {
     const url = `http://localhost:${uiPort}`;
@@ -1159,7 +1035,17 @@ function startFeedbackUI() {
 }
 
 async function runStreamableHTTPServer() {
-  await hydratePersistedState();
+  // Initialize SessionManager - this is the single source of truth for session state
+  sessionManager = new SessionManager(sessionStateStore, {
+    onStateChange: (sessionId?: string) => {
+      broadcastUiState(sessionId);
+    },
+    onLog: (level, event, details) => {
+      logEvent(level, event, details);
+    },
+  });
+  await sessionManager.initialize();
+  
   const app = express();
 
   app.use((req, res, next) => {
@@ -1189,7 +1075,7 @@ async function runStreamableHTTPServer() {
       let entry: StreamableSessionEntry | undefined;
 
       if (sessionId) {
-        entry = streamableSessions.get(sessionId);
+        entry = getSession(sessionId);
         if (!entry) {
           logEvent("warn", "mcp.session.invalid", { sessionId, method: req.method });
           res.status(404).json({
@@ -1199,7 +1085,9 @@ async function runStreamableHTTPServer() {
           });
           return;
         }
-        entry.lastActivityAt = new Date().toISOString();
+        // Note: lastActivityAt is NOT updated here on every request.
+        // It's only updated on meaningful activity (get_feedback calls, feedback delivery).
+        // This prevents MCP polling from keeping stale sessions alive.
         logEvent("debug", "mcp.session.reused", {
           sessionId,
           method: req.method,
@@ -1221,7 +1109,7 @@ async function runStreamableHTTPServer() {
         const sessionServer = createSessionServer();
         const inferredAlias = inferAliasFromInitializeBody(req.body);
         const clientAlias = inferredAlias || "unknown-client";
-        const clientGeneration = await nextClientGeneration(clientAlias);
+        const clientGeneration = sessionManager.getNextClientGeneration(clientAlias);
         const sessionSlug = slugifyForSessionId(clientAlias);
         const transportId = randomUUID();
         let createdTransport: StreamableHTTPServerTransport;
@@ -1231,32 +1119,23 @@ async function runStreamableHTTPServer() {
           retryInterval: STREAM_RETRY_INTERVAL_MS,
           onsessioninitialized: (initializedSessionId) => {
             if (inferredAlias) {
-              inferredAliasBySession.set(initializedSessionId, inferredAlias);
-              persistAsync("session.persistence.inferred_alias", sessionStateStore.setInferredAlias(initializedSessionId, inferredAlias));
+              sessionManager.setInferredAlias(initializedSessionId, inferredAlias);
             }
-            const sessionEntry: StreamableSessionEntry = {
-              transport: createdTransport,
-              server: sessionServer,
+            sessionManager.createSession(
+              initializedSessionId,
+              createdTransport,
+              sessionServer,
               transportId,
               clientAlias,
-              clientGeneration,
-              createdAt: new Date().toISOString(),
-              lastActivityAt: new Date().toISOString(),
-            };
-            streamableSessions.set(initializedSessionId, sessionEntry);
-            broadcastUiState(initializedSessionId);
-            persistAsync("session.persistence.created", (async () => {
-              await persistSessionMetadata(initializedSessionId, sessionEntry);
-              await persistFeedbackState(initializedSessionId);
-              await reassociatePersistedStateForAlias(initializedSessionId, clientAlias);
-            })());
+              clientGeneration
+            );
             logEvent("info", "mcp.session.created", {
               sessionId: initializedSessionId,
               transportId,
               clientAlias,
               clientGeneration,
               inferredAlias: inferredAlias || undefined,
-              activeSessions: streamableSessions.size,
+              activeSessions: getAllSessions().size,
             });
           },
         });
@@ -1265,8 +1144,7 @@ async function runStreamableHTTPServer() {
           const closedSessionId = createdTransport.sessionId;
           if (!closedSessionId) return;
           persistAsync("session.persistence.stream_closed", clearPendingWaiter(closedSessionId, "stream_closed"));
-          broadcastUiState(closedSessionId);
-          const closedEntry = streamableSessions.get(closedSessionId);
+          const closedEntry = getSession(closedSessionId);
           // Stream closures can be transient (for example SSE reconnects).
           // Keep session state unless an explicit DELETE/session disconnect occurs.
           logEvent("warn", "mcp.session.stream.closed", {
@@ -1274,7 +1152,7 @@ async function runStreamableHTTPServer() {
             transportId: closedEntry?.transportId ?? transportId,
             clientAlias: closedEntry?.clientAlias || clientAlias,
             clientGeneration: closedEntry?.clientGeneration ?? clientGeneration,
-            activeSessions: streamableSessions.size,
+            activeSessions: getAllSessions().size,
           });
         };
 
@@ -1287,6 +1165,7 @@ async function runStreamableHTTPServer() {
           clientGeneration,
           createdAt: new Date().toISOString(),
           lastActivityAt: new Date().toISOString(),
+          status: "active",
         };
         }
 
@@ -1300,28 +1179,17 @@ async function runStreamableHTTPServer() {
       }
 
       await requestContext.run({ requestId, res }, async () => {
-        await entry.transport.handleRequest(req, res, req.body);
+        await entry.transport!.handleRequest(req, res, req.body);
       });
-      await persistSessionMetadata(sessionId || entry.transport.sessionId || DEFAULT_FEEDBACK_SESSION, entry);
 
       if (req.method === "DELETE" && sessionId) {
-        await clearPendingWaiter(sessionId, "explicit_delete");
-        streamableSessions.delete(sessionId);
-        feedbackStateBySession.delete(sessionId);
-        manualAliasBySession.delete(sessionId);
-        inferredAliasBySession.delete(sessionId);
-        if (activeUiSessionId === sessionId) {
-          activeUiSessionId = DEFAULT_FEEDBACK_SESSION;
-          await persistActiveUiSession();
-        }
-        await sessionStateStore.deleteSession(sessionId);
-        broadcastUiState();
+        await sessionManager.deleteSession(sessionId, "explicit_delete");
         logEvent("info", "mcp.session.closed", {
           sessionId,
           transportId: entry.transportId,
           clientAlias: entry.clientAlias || undefined,
           clientGeneration: entry.clientGeneration ?? undefined,
-          activeSessions: streamableSessions.size,
+          activeSessions: getAllSessions().size,
           reason: "explicit_delete",
         });
       }
@@ -1348,7 +1216,7 @@ async function runStreamableHTTPServer() {
       server: "tasksync-mcp",
       version: "1.0.0",
       transport: "streamable-http",
-      sessions: streamableSessions.size,
+      sessions: getAllSessions().size,
       persistence: "file-backed minimal session state; transient in-memory replay",
     });
   });
@@ -1378,16 +1246,19 @@ function cleanup() {
   if (cleanedUp) return;
   cleanedUp = true;
 
-  logEvent("info", "server.cleanup.start", { activeSessions: streamableSessions.size });
+  logEvent("info", "server.cleanup.start", { activeSessions: getAllSessions().size });
   console.error("\nShutting down server...");
-  for (const [sessionId, session] of streamableSessions.entries()) {
-    session.transport.close().catch(() => {
+  
+  // Shutdown SessionManager (clears auto-prune interval)
+  sessionManager.shutdown();
+  
+  // Close all active sessions
+  for (const [sessionId, session] of getAllSessions().entries()) {
+    session.transport?.close().catch(() => {
       /* best-effort shutdown */
     });
-    streamableSessions.delete(sessionId);
-    feedbackStateBySession.delete(sessionId);
   }
-  logEvent("info", "server.cleanup.done", { activeSessions: streamableSessions.size });
+  logEvent("info", "server.cleanup.done", { activeSessions: getAllSessions().size });
 }
 
 process.on("SIGINT", () => {
