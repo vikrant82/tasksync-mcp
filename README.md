@@ -2,55 +2,51 @@
 
 Iterative human feedback loops for coding agents. TaskSync lets you pause an AI agent, provide feedback (text + images), and resume — keeping the human in the loop during long-running coding sessions.
 
+## Install & Start
+
+```bash
+npx tasksync-mcp-http
+```
+
+This starts the MCP server on port 3011 and the feedback web UI on port 3456.
+
 ## Two Integration Paths
 
 | | **OpenCode Plugin** | **MCP Server** |
 |---|---|---|
 | **Best for** | [OpenCode](https://opencode.ai) users | VS Code Copilot, Claude Desktop, any MCP client |
-| **Setup** | Drop-in plugin, zero config | Start server, configure MCP endpoint |
+| **Setup** | Drop-in plugin, zero config | Configure MCP endpoint in your client |
 | **Agent injection** | Automatic (daemon agent + optional augmentation) | Manual (paste agent prompt) |
 | **Feedback tool** | `get_feedback` (native tool) | `tasksync_get_feedback` (MCP-prefixed) |
 | **Image support** | Text only (OpenCode limitation) | Full MCP `ImageContent` blocks |
 
-## Quick Start: OpenCode Plugin
+## OpenCode Plugin
 
-1. Start the TaskSync server:
-   ```bash
-   npx tasksync-mcp-http
-   ```
-   Or from source: `npm install && npm run build && node dist/index.js`
+Add to your `~/.config/opencode/opencode.json`:
 
-2. Add to your global `~/.config/opencode/opencode.json`:
-   ```json
-   {
-     "plugin": ["opencode-tasksync"]
-   }
-   ```
-
-3. Optionally configure in `~/.tasksync/config.json`:
-   ```json
-   {
-     "serverUrl": "http://localhost:3456",
-     "augmentAgents": [],
-     "overlayStyle": "full"
-   }
-   ```
-
-3. Start OpenCode. A `daemon` agent is automatically available with the feedback loop built in.
-
-See **[OpenCode Plugin Guide](docs/OPENCODE_PLUGIN.md)** for configuration details and agent augmentation.
-
-## Quick Start: MCP Server
-
-```bash
-npx tasksync-mcp-http --port=3011 --ui-port=3456
+```json
+{
+  "plugin": ["opencode-tasksync"]
+}
 ```
 
-Or from source: `npm install && npm run build && node dist/index.js --port=3011 --ui-port=3456`
+Start OpenCode — a `daemon` agent is automatically available with the feedback loop built in.
 
-- MCP endpoint: `http://localhost:3011/mcp`
-- Feedback UI: `http://localhost:3456`
-- Health check: `http://localhost:3011/health`
+Optionally configure in `~/.tasksync/config.json`:
+
+```json
+{
+  "serverUrl": "http://localhost:3456",
+  "augmentAgents": ["ask", "build"],
+  "overlayStyle": "full"
+}
+```
+
+See **[OpenCode Plugin Guide](docs/OPENCODE_PLUGIN.md)** for configuration and agent augmentation details.
+
+## MCP Server
+
+Point your MCP client at `http://localhost:3011/mcp`:
 
 ### OpenCode (MCP mode)
 
@@ -117,14 +113,23 @@ See **[Feedback UI Guide](docs/FEEDBACK_UI_GUIDE.md)** for details.
 | `TASKSYNC_LOG_LEVEL` | `debug`, `info`, `warn`, `error` (default: `info`) |
 | `TASKSYNC_LOG_FILE` | Path to log file (default: stderr) |
 
+## Building from Source
+
+```bash
+git clone https://github.com/vikrant82/tasksync-mcp.git
+cd tasksync-mcp
+npm install && npm run build
+node dist/index.js
+```
+
 ## Agent Prompts
 
-TaskSync includes ready-to-use daemon agent prompts:
+TaskSync includes ready-to-use daemon agent prompts in `prompts/`:
 
-| File | Client | Mode |
-|------|--------|------|
-| `task-sync-agent-opencode.md` | OpenCode | Default (keepalive) |
-| `task-sync-agent-copilot.md` | VS Code Copilot | Default (keepalive) |
+| File | Client |
+|------|--------|
+| `task-sync-agent-opencode.md` | OpenCode |
+| `task-sync-agent-copilot.md` | VS Code Copilot |
 
 The OpenCode plugin injects these automatically — no manual prompt configuration needed.
 

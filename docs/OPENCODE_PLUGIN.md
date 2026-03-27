@@ -4,12 +4,10 @@ The `opencode-tasksync` plugin integrates TaskSync directly into [OpenCode](http
 
 ## Prerequisites
 
-The TaskSync server must be running. The plugin is a thin client that talks to the server:
+Start the TaskSync server:
 
 ```bash
-cd tasksync-mcp
-npm install && npm run build
-node dist/index.js
+npx tasksync-mcp-http
 ```
 
 Server starts on:
@@ -26,7 +24,18 @@ Add to your global OpenCode config (`~/.config/opencode/opencode.json`):
 }
 ```
 
-Or for local development:
+OpenCode auto-installs npm plugins at startup. No build step needed.
+
+### Local Development
+
+For development from source, build the plugin first:
+
+```bash
+cd opencode-plugin
+npm install && npm run build
+```
+
+Then point to the local path in `opencode.json`:
 
 ```json
 {
@@ -34,37 +43,17 @@ Or for local development:
 }
 ```
 
-### Building from Source
-
-If using a local path, build the plugin first:
-
-```bash
-cd opencode-plugin
-npm install
-npm run build
-```
-
-This compiles TypeScript to `dist/`. The `dist/index.js` is the plugin entry point that OpenCode loads.
-
-After making changes to plugin source, rebuild with `npm run build` and restart OpenCode to pick up the new code.
+Rebuild with `npm run build` after changes, then restart OpenCode.
 
 ## Configuration
 
-Create a `.tasksync/config.json` file (global or project-level):
+Create `~/.tasksync/config.json` (global) or `.tasksync/config.json` (project-level):
 
-**Global** (`~/.tasksync/config.json`):
 ```json
 {
   "serverUrl": "http://localhost:3456",
   "augmentAgents": [],
   "overlayStyle": "full"
-}
-```
-
-**Project-level** (`.tasksync/config.json` in your project root):
-```json
-{
-  "augmentAgents": ["coder", "ask"]
 }
 ```
 
@@ -114,9 +103,7 @@ You can inject the feedback loop into existing agents (like `coder`, `ask`, `bui
 
 ```json
 {
-  "tasksync": {
-    "augmentAgents": ["coder", "ask"]
-  }
+  "augmentAgents": ["coder", "ask"]
 }
 ```
 
@@ -167,7 +154,7 @@ Sessions are auto-registered on first `get_feedback` call. Cleanup happens on `s
 
 **Plugin not loading**: Check `opencode.json` `plugin` array points to the correct path or npm package name.
 
-**"Connection refused" errors**: Ensure the TaskSync server is running (`node dist/index.js`).
+**"Connection refused" errors**: Ensure the TaskSync server is running (`npx tasksync-mcp-http`).
 
 **Agent not calling `get_feedback`**: Check that you're using the `daemon` agent, or that the agent is listed in `augmentAgents`.
 
