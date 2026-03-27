@@ -8,7 +8,7 @@ permissions:
   contents: read
 
 jobs:
-  # Publish tasksync-mcp (MCP server) on v* tags
+  # Publish tasksync-mcp-http (MCP server) on v* tags
   publish-server:
     if: startsWith(github.event.release.tag_name, 'v')
     runs-on: ubuntu-latest

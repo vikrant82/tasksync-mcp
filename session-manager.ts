@@ -14,7 +14,7 @@ import { SessionStateStore, type ImageAttachment, type PersistedFeedbackState } 
 // ============================================================================
 
 const DEFAULT_SESSION_ID = "__default__";
-const DEFAULT_DISCONNECT_AFTER_MINUTES = 10;
+const DEFAULT_DISCONNECT_AFTER_MINUTES = 20;
 const MIN_DISCONNECT_AFTER_MINUTES = 1;
 const MAX_DISCONNECT_AFTER_MINUTES = 24 * 60; // 1 day
 const AUTO_PRUNE_INTERVAL_MS = 60 * 1000; // Check every minute

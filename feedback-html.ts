@@ -407,19 +407,30 @@ ${FEEDBACK_HTML_ENHANCED_STYLES}
       </div>
       <div class="panel">
         <h2 id="settings-heading">Settings</h2>
-        <div class="notify-controls">
-          <label><input id="notify-sound" type="checkbox" checked /> Sound alert</label>
-          <label><input id="notify-desktop" type="checkbox" /> Desktop alert</label>
-          <label>Mode:
-            <select id="notify-mode" aria-label="Notification mode">
-              <option value="focused">Focused session</option>
-              <option value="all">All sessions</option>
-            </select>
-          </label>
-          <button type="button" class="theme-toggle" id="theme-toggle" aria-label="Toggle light/dark theme">
-            <span id="theme-icon">&#9790;</span> <span id="theme-label">Light</span>
-          </button>
-        </div>
+         <div class="notify-controls">
+           <label><input id="notify-sound" type="checkbox" checked /> Sound alert</label>
+           <label><input id="notify-desktop" type="checkbox" /> Desktop alert</label>
+           <label>Mode:
+             <select id="notify-mode" aria-label="Notification mode">
+               <option value="focused">Focused session</option>
+               <option value="all">All sessions</option>
+             </select>
+           </label>
+           <label>Auto-prune after:
+             <select id="disconnect-after" aria-label="Auto-prune inactive sessions after">
+               <option value="5">5 min</option>
+               <option value="10">10 min</option>
+               <option value="20" selected>20 min</option>
+               <option value="30">30 min</option>
+               <option value="60">1 hour</option>
+               <option value="120">2 hours</option>
+               <option value="1440">24 hours</option>
+             </select>
+           </label>
+           <button type="button" class="theme-toggle" id="theme-toggle" aria-label="Toggle light/dark theme">
+             <span id="theme-icon">&#9790;</span> <span id="theme-label">Light</span>
+           </button>
+         </div>
       </div>
     </div>
   </div>
@@ -452,6 +463,7 @@ ${FEEDBACK_HTML_ENHANCED_STYLES}
   const themeToggleEl = document.getElementById('theme-toggle');
   const themeIconEl = document.getElementById('theme-icon');
   const themeLabelEl = document.getElementById('theme-label');
+  const disconnectAfterEl = document.getElementById('disconnect-after');
 
   // ── SSE and state tracking ──
   let uiEventSource = null;
@@ -1041,7 +1053,41 @@ ${FEEDBACK_HTML_COMPOSER_HISTORY_SCRIPT}
     mdToolbarAction(btn.getAttribute('data-md'));
   });
 
+  // ── Auto-prune timeout: load from server, save on change ──
+  async function loadDisconnectAfter() {
+    try {
+      const res = await fetch('/settings');
+      if (res.ok) {
+        const data = await res.json();
+        if (disconnectAfterEl && typeof data.disconnectAfterMinutes === 'number') {
+          disconnectAfterEl.value = String(data.disconnectAfterMinutes);
+        }
+      }
+    } catch { /* ignore */ }
+  }
+  if (disconnectAfterEl) {
+    disconnectAfterEl.addEventListener('change', async () => {
+      const minutes = parseInt(disconnectAfterEl.value, 10);
+      if (isNaN(minutes)) return;
+      try {
+        const res = await fetch('/settings/disconnect-after', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ minutes })
+        });
+        if (res.ok) {
+          showStatus('Auto-prune timeout updated to ' + minutes + ' min', 'success');
+        } else {
+          showStatus('Failed to update auto-prune timeout', 'error');
+        }
+      } catch (err) {
+        showStatus('Error: ' + err.message, 'error');
+      }
+    });
+  }
+
   // ── Bootstrap ──
+  loadDisconnectAfter();
   loadSessions();
   connectEvents();
 </script>

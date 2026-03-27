@@ -16,9 +16,9 @@ Iterative human feedback loops for coding agents. TaskSync lets you pause an AI 
 
 1. Start the TaskSync server:
    ```bash
-   npm install && npm run build
-   node dist/index.js
+   npx tasksync-mcp-http
    ```
+   Or from source: `npm install && npm run build && node dist/index.js`
 
 2. Add to your global `~/.config/opencode/opencode.json`:
    ```json
@@ -43,9 +43,10 @@ See **[OpenCode Plugin Guide](docs/OPENCODE_PLUGIN.md)** for configuration detai
 ## Quick Start: MCP Server
 
 ```bash
-npm install && npm run build
-node dist/index.js --port=3011 --ui-port=3456
+npx tasksync-mcp-http --port=3011 --ui-port=3456
 ```
+
+Or from source: `npm install && npm run build && node dist/index.js --port=3011 --ui-port=3456`
 
 - MCP endpoint: `http://localhost:3011/mcp`
 - Feedback UI: `http://localhost:3456`

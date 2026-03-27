@@ -1,6 +1,6 @@
 {
-  "name": "tasksync-mcp",
-  "version": "1.0.12",
+  "name": "tasksync-mcp-http",
+  "version": "1.0.0",
   "description": "TaskSync MCP server — persistent daemon feedback loop for AI coding agents",
   "license": "MIT",
   "author": "vikrant82",
@@ -23,7 +23,7 @@
   ],
   "type": "module",
   "bin": {
-    "tasksync-mcp": "dist/index.js"
+    "tasksync-mcp-http": "dist/index.js"
   },
   "files": [
     "dist"

@@ -13,7 +13,7 @@ OpenCode plugin for [TaskSync](https://github.com/vikrant82/tasksync-mcp) — ad
 You need a running TaskSync server. Install and start it:
 
 ```bash
-npx tasksync-mcp
+npx tasksync-mcp-http
 ```
 
 This starts the MCP server (port 3011) and web UI (port 3456).
