@@ -1,9 +1,26 @@
 {
   "name": "tasksync-mcp",
   "version": "1.0.11",
-  "description": "TaskSync MCP server for filesystem access and review feedback",
+  "description": "TaskSync MCP server — persistent daemon feedback loop for AI coding agents",
   "license": "MIT",
-  "author": "TaskSync",
+  "author": "vikrant82",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/vikrant82/tasksync-mcp.git"
+  },
+  "homepage": "https://github.com/vikrant82/tasksync-mcp",
+  "bugs": {
+    "url": "https://github.com/vikrant82/tasksync-mcp/issues"
+  },
+  "keywords": [
+    "mcp",
+    "tasksync",
+    "feedback",
+    "human-in-the-loop",
+    "model-context-protocol",
+    "agent",
+    "daemon"
+  ],
   "type": "module",
   "bin": {
     "tasksync-mcp": "dist/index.js"
