@@ -7,7 +7,7 @@ The `opencode-tasksync` plugin integrates TaskSync directly into [OpenCode](http
 Start the TaskSync server:
 
 ```bash
-npx tasksync-mcp-http
+npx tasksync-mcp-http --port=3011 --ui-port=3456
 ```
 
 Server starts on:
@@ -103,7 +103,7 @@ You can inject the feedback loop into existing agents (like `coder`, `ask`, `bui
 
 ```json
 {
-  "augmentAgents": ["coder", "ask"]
+  "augmentAgents": ["ask", "build", "plan"]
 }
 ```
 
@@ -154,7 +154,7 @@ Sessions are auto-registered on first `get_feedback` call. Cleanup happens on `s
 
 **Plugin not loading**: Check `opencode.json` `plugin` array points to the correct path or npm package name.
 
-**"Connection refused" errors**: Ensure the TaskSync server is running (`npx tasksync-mcp-http`).
+**"Connection refused" errors**: Ensure the TaskSync server is running (`npx tasksync-mcp-http --port=3011 --ui-port=3456`).
 
 **Agent not calling `get_feedback`**: Check that you're using the `daemon` agent, or that the agent is listed in `augmentAgents`.
 

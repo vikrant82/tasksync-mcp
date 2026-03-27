@@ -5,10 +5,11 @@ Iterative human feedback loops for coding agents. TaskSync lets you pause an AI 
 ## Install & Start
 
 ```bash
-npx tasksync-mcp-http
+npx tasksync-mcp-http --port=3011 --ui-port=3456
 ```
 
-This starts the MCP server on port 3011 and the feedback web UI on port 3456.
+- `--port` — MCP Streamable HTTP server (default: 3011)
+- `--ui-port` — Feedback web UI (default: 3456)
 
 ## Two Integration Paths
 
@@ -37,7 +38,7 @@ Optionally configure in `~/.tasksync/config.json`:
 ```json
 {
   "serverUrl": "http://localhost:3456",
-  "augmentAgents": ["ask", "build"],
+  "augmentAgents": ["ask", "build", "plan"],
   "overlayStyle": "full"
 }
 ```

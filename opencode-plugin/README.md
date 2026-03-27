@@ -13,7 +13,7 @@ OpenCode plugin for [TaskSync](https://github.com/vikrant82/tasksync-mcp) — ad
 You need a running TaskSync server. Install and start it:
 
 ```bash
-npx tasksync-mcp-http
+npx tasksync-mcp-http --port=3011 --ui-port=3456
 ```
 
 This starts the MCP server (port 3011) and web UI (port 3456).
@@ -56,7 +56,7 @@ Create `~/.tasksync/config.json` (global) or `.tasksync/config.json` (project):
 ```json
 {
   "serverUrl": "http://localhost:3456",
-  "augmentAgents": ["ask", "build"],
+  "augmentAgents": ["ask", "build", "plan"],
   "overlayStyle": "full"
 }
 ```
