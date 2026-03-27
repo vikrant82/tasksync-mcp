@@ -53,6 +53,48 @@ Session semantics:
 - `POST /sessions/prune` — removes sessions inactive for >1 hour
 - `DELETE /sessions/:sessionId`
 
+## Plugin REST API
+
+These endpoints support external clients (e.g., the OpenCode plugin) that connect via HTTP instead of MCP.
+
+### `POST /api/sessions`
+
+Register an external session.
+
+Request body:
+```json
+{ "sessionId": "my-session-1", "alias": "My Agent" }
+```
+
+Response:
+```json
+{ "ok": true, "sessionId": "my-session-1" }
+```
+
+Idempotent — returns ok if session already exists. Creates a session without MCP transport.
+
+### `POST /api/wait/:sessionId`
+
+Long-poll for feedback. Blocks until feedback is submitted or client disconnects.
+
+Auto-registers the session if it doesn't exist.
+
+Response (feedback received):
+```json
+{ "type": "feedback", "content": "user's feedback text", "images": [] }
+```
+
+Response (session closed):
+```json
+{ "type": "closed", "reason": "Session deleted" }
+```
+
+Behavior:
+- If queued feedback exists, returns immediately
+- Otherwise blocks until feedback is submitted via the web UI
+- Client abort (e.g., `AbortController.abort()`) cancels the wait cleanly
+- No keepalive needed (designed for localhost use)
+
 `GET /sessions` response fields per session include:
 - `sessionId`: canonical MCP session ID (human-readable, e.g., `opencode-1`)
 - `alias`: optional display label (manual alias or inferred initialize metadata)

@@ -889,6 +889,112 @@ function startFeedbackUI() {
     }
   });
 
+  // ── Plugin API endpoints ──────────────────────────────────────────
+  // These endpoints allow external clients (e.g. OpenCode plugin) to
+  // register sessions and long-poll for feedback without MCP transport.
+
+  feedbackApp.post("/api/sessions", async (req, res) => {
+    try {
+      const sessionId = typeof req.body?.sessionId === "string" ? req.body.sessionId.trim() : "";
+      if (!sessionId) {
+        res.status(400).json({ error: "sessionId is required" });
+        return;
+      }
+
+      // Idempotent: if session already exists, just return ok
+      if (hasSession(sessionId)) {
+        res.json({ ok: true, sessionId, existing: true });
+        return;
+      }
+
+      const alias = typeof req.body?.alias === "string" ? normalizeAlias(req.body.alias) : "";
+      const transportId = `plugin-${sessionId}`;
+
+      sessionManager.createSession(
+        sessionId,
+        undefined, // no MCP transport
+        undefined, // no MCP server
+        transportId,
+        alias || sessionId,
+        null
+      );
+
+      if (alias) {
+        sessionManager.setInferredAlias(sessionId, alias);
+      }
+
+      logEvent("info", "api.session.registered", { sessionId, alias: alias || undefined });
+      res.json({ ok: true, sessionId, existing: false });
+    } catch (err) {
+      logEvent("error", "api.session.register.error", { error: String(err) });
+      res.status(500).json({ error: String(err) });
+    }
+  });
+
+  feedbackApp.post("/api/wait/:sessionId", async (req, res) => {
+    const sessionId = req.params.sessionId?.trim();
+    if (!sessionId) {
+      res.status(400).json({ error: "sessionId is required" });
+      return;
+    }
+
+    // Auto-register session if not exists (idempotent)
+    if (!hasSession(sessionId)) {
+      const transportId = `plugin-${sessionId}`;
+      sessionManager.createSession(sessionId, undefined, undefined, transportId, sessionId, null);
+      logEvent("info", "api.wait.auto_registered", { sessionId });
+    }
+
+    // Check queued feedback first — return immediately if found
+    const queued = sessionManager.consumeQueuedFeedback(sessionId);
+    if (queued) {
+      logEvent("info", "api.wait.queued", { sessionId, contentLength: queued.content.length });
+      res.json({ type: "feedback", content: queued.content, images: queued.images || null });
+      return;
+    }
+
+    // Set up long-poll waiter
+    const waitId = crypto.randomUUID();
+    const { promise, resolve } = Promise.withResolvers<PendingFeedbackResult>();
+
+    sessionManager.setWaiter(sessionId, {
+      waitId,
+      startedAt: new Date().toISOString(),
+      requestId: waitId,
+      resolve,
+    });
+
+    logEvent("info", "api.wait.started", { sessionId, waitId });
+
+    // Clean up if client disconnects (plugin abort signal cancels fetch).
+    // IMPORTANT: Listen on `res`, not `req`. The request stream is already consumed
+    // by Express's body parser, so req's 'close' fires immediately. The response's
+    // 'close' fires when the TCP connection drops (client disconnect/abort).
+    let resolved = false;
+    res.on("close", () => {
+      if (!resolved) {
+        sessionManager.clearPendingWaiter(sessionId, "client_disconnected", waitId);
+        logEvent("info", "api.wait.client_disconnected", { sessionId, waitId });
+      }
+    });
+
+    try {
+      const result = await promise;
+      resolved = true;
+      logEvent("info", "api.wait.resolved", {
+        sessionId,
+        waitId,
+        type: result.type,
+        contentLength: result.type === "feedback" ? result.content.length : 0,
+      });
+      res.json(result);
+    } catch (err) {
+      resolved = true;
+      logEvent("error", "api.wait.error", { sessionId, waitId, error: String(err) });
+      res.status(500).json({ error: String(err) });
+    }
+  });
+
   feedbackApp.listen(uiPort, () => {
     logEvent("info", "ui.started", { uiPort });
     console.error(`Feedback UI running at http://localhost:${uiPort}`);
@@ -1073,7 +1179,7 @@ async function runStreamableHTTPServer() {
       }
 
       await requestContext.run({ requestId, res }, async () => {
-        await entry.transport.handleRequest(req, res, req.body);
+        await entry.transport!.handleRequest(req, res, req.body);
       });
 
       if (req.method === "DELETE" && sessionId) {
@@ -1148,7 +1254,7 @@ function cleanup() {
   
   // Close all active sessions
   for (const [sessionId, session] of getAllSessions().entries()) {
-    session.transport.close().catch(() => {
+    session.transport?.close().catch(() => {
       /* best-effort shutdown */
     });
   }

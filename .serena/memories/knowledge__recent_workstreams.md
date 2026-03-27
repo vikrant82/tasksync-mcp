@@ -1,38 +1,22 @@
-Updated: 2026-03-20
+Updated: 2026-03-27
 
-This memory consolidates important details from deprecated handoff memories that were removed as stale.
+## Active: OpenCode Plugin (Detached Server Architecture)
+- Branch: `simple-prune`
+- Status: **Working** — tested successfully, feedback loop holds open correctly
+- Server-side: `res.on('close')` for client disconnect (NOT `req` — Express body parser consumes `req` stream)
+- Plugin: `opencode-plugin/` — thin HTTP client connecting to server REST API
+- Config: `.tasksync/config.json` (global `~/.tasksync/` + project `.tasksync/`) with env var overrides
+- Bug fixed: `req.on('close')` fired immediately (1ms) → changed to `res.on('close')` for proper long-poll
+- Bug fixed: `pruneStale()` now resets `activeUiSessionId` when active session is pruned
+- Docs: README, OPENCODE_PLUGIN.md, API_SPEC.md, SESSION_WORKFLOW.md all updated
+- Previous monorepo approach parked on `opencode-plugin` branch
 
-## Consolidated outcomes
+## Completed: Simple Prune Integration (March 2026)
+- SessionManager extraction from index.ts
+- Bug fixes for double-message/redundant broadcasts
+- Auto-prune + manual prune with UI support
 
-### 1) Feedback UI image support workstream (former `handoff__feedback_ui_image_support`)
-- Full image pipeline was implemented on branch `image_support`:
-  - UI: paste / drag-drop / file attach images
-  - POST `/feedback` accepts `images[]` with `{data: base64, mimeType}`
-  - Backend propagates images through queued/waiter flow
-  - `get_feedback` returns mixed MCP blocks (`TextContent` + `ImageContent`)
-  - History renders thumbnails + lightbox
-- Markdown toolbar was implemented with buttons and keyboard shortcuts.
-- Docs were updated in README + API/UI docs during that stream.
-- Key design decisions from that workstream:
-  - Base64 transport in browser for simplicity
-  - `ImageAttachment = { data, mimeType }`
-  - Limits: 10 images, 10MB each, 50MB JSON body limit
-  - Image-only submissions allowed
-
-### 2) Frontend enhancements workstream (former `handoff__frontend_enhancements`)
-- Major UX/accessibility/UI refactor completed:
-  - Two-column layout, session metadata visibility, improved waiting indicators
-  - Accessibility improvements (aria-live/focus-visible labels)
-  - UX polish (draft persistence, inline rename, shortcuts, filters)
-  - Visual system improvements (theme toggle, responsive behavior)
-- Stale session management landed:
-  - UI stale flag for inactive sessions
-  - UI prune action/button
-  - Backend `POST /sessions/prune` endpoint
-
-## Active follow-up direction
-- Improve stale/disconnected-session discovery logic to reduce false positives/false negatives.
-- Existing heuristic is primarily time since `lastActivityAt` plus `waitingForFeedback`; this should evolve to incorporate richer connection-health signals.
-
-## Why this memory exists
-- Preserve useful context while deleting stale handoff memories and avoiding handoff clutter in memory list.
+## Completed: Image Support & UI Enhancements (March 2026)
+- Full image pipeline (paste/drag/file → base64 → MCP ImageContent)
+- Markdown toolbar, accessibility, two-column layout
+- Session management UI (rename, prune, delete)

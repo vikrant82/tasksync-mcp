@@ -1,49 +1,63 @@
-Updated 2026-03-10.
+Updated 2026-03-27.
+
+## Two Integration Paths
+
+TaskSync supports two ways to connect agents:
+
+1. **MCP Server** — Streamable HTTP MCP for VS Code Copilot, Claude Desktop, any MCP client
+2. **OpenCode Plugin** — Native plugin (`opencode-tasksync`) that connects to the server via REST
+
+Both share the same server, SessionManager, feedback UI, and persistence layer.
 
 ## Core Architecture
-- Runtime centered in `index.ts` with two Express apps:
-  1. Streamable HTTP MCP server on `/mcp`
-  2. Feedback UI server on `/`, `/session/:sessionId`, `/events`, `/feedback/history`, `/sessions`, and session mutation routes.
+
+Runtime centered in `index.ts` with two Express apps:
+1. **MCP server** on port 3011 (`/mcp`, `/health`)
+2. **Feedback UI server** on port 3456 — serves web UI, SSE events, REST API
+
+### Session Types
+- **MCP sessions**: Created via MCP `initialize`, have `StreamableHTTPServerTransport` + `Server`
+- **Plugin sessions**: Created via `POST /api/sessions` or auto on `POST /api/wait/:id`, no MCP transport
+
+`StreamableSessionEntry` has optional `transport?` and `server?` fields to support both types.
 
 ## Transport & Keepalive
 - MCP transport: `StreamableHTTPServerTransport` with transient in-memory replay
-- `requestContext` AsyncLocalStorage carries `{ requestId, res?: express.Response }` per request
-- SSE keepalive: writes `: keepalive\n\n` every 30s to POST response stream via `res.write()`
-  - Bypasses SDK transport abstraction (writes directly to Express response)
-  - Cleared on: feedback received, timeout, connection close, write error
-  - Configurable via `KEEPALIVE_INTERVAL_MS = 30000`
-- `--heartbeat` flag: opt-in for legacy [WAITING] timeout mode
-  - `heartbeat=false` (default): `feedbackTimeout=0`, waits indefinitely
-  - `heartbeat=true`: `feedbackTimeout` from `--timeout=` or `DEFAULT_TIMEOUT` (1 hour)
+- `requestContext` AsyncLocalStorage carries `{ requestId, res?: express.Response }` per MCP request
+- SSE keepalive: writes `: keepalive\n\n` every 30s to POST response stream (MCP only)
+- Plugin uses long-poll (`POST /api/wait/:sessionId`) — no keepalive needed (localhost)
 
 ## Session & State Management
-- `session-state-store.ts`: file-backed metadata in `.tasksync/session-state.json`
-  - latest/queued feedback, bounded feedback history, session metadata, alias metadata, active UI session
-- `stream-event-store.ts`: transient in-memory event store for short-lived replay
-- Session IDs: `{client-slug}-{generation}` format (e.g., `opencode-1`, `copilot-3`)
-  - `slugifyForSessionId()` extracts tool name from alias, lowercases, strips version/special chars
-  - `nextClientGeneration()` provides monotonic counter per alias, persisted to disk
-- Session close: stream close clears waiter + logs; DELETE fully removes state
-- Auto-prune: `setInterval` every 5 min removes sessions inactive >4h (not waiting)
+- `session-manager.ts`: `SessionManager` class — sessions, feedback state, aliases, auto-prune
+- `session-state-store.ts`: file-backed persistence in `.tasksync/session-state.json`
+- Session IDs: MCP uses `{client-slug}-{generation}` (e.g., `opencode-1`), plugin uses OpenCode session IDs
+- Auto-prune: every 1 min, removes sessions inactive >10 min (configurable, not waiting)
+- Prune resets `activeUiSessionId` if the active session was pruned
 
 ## Feedback Flow
-- `get_feedback` waiter ownership tracked per raw HTTP request via request-scoped IDs
-- Request abort/response close cleanup: abandoned POST waits clear only their own waiter
-- Later feedback queued if no active waiter
-- Image support: `POST /feedback` accepts optional `images[]` array of `{data: base64, mimeType}`. Backend propagates through waiter/queue. `formatFeedbackResponse()` returns mixed `TextContent + ImageContent` MCP blocks. Express JSON limit: 50mb.
-- `ImageAttachment` type and `sanitizeImageAttachments()` helper defined in `session-state-store.ts`
+- Waiter pattern: `setWaiter()` → `deliverFeedback()` (resolves) or `clearPendingWaiter()` (cancels)
+- Queued feedback: `consumeQueuedFeedback()` returns immediately if feedback was submitted before wait
+- Image support: MCP returns `TextContent + ImageContent` blocks; plugin returns text-only string
+- `formatFeedbackResponse()` creates MCP content blocks
+
+## Plugin REST API (on UI server port)
+- `POST /api/sessions` — register external session (idempotent)
+- `POST /api/wait/:sessionId` — long-poll for feedback (auto-registers, checks queue first, blocks)
+- Client abort → `res.on('close')` → `clearPendingWaiter()` cleanup (must use `res`, not `req` — Express body parser consumes `req` stream before handler runs)
+
+## OpenCode Plugin (`opencode-plugin/` directory)
+- Thin HTTP client — `fetch()` to server REST endpoints
+- Config hook: always injects `daemon` agent + optional augmentation of other agents
+- Event hook: cleans up on `session.deleted`
+- Config from `.tasksync/config.json` (global `~/.tasksync/` → project `.tasksync/` → env vars)
+- OpenCode rejects unknown keys in `opencode.json`, so config uses dedicated files
 
 ## Logging
-- Compact structured logs via `logEvent(...)`
-- Pretty debug request/response logs with request IDs and MCP method hints
-- Debug body truncation: `DEBUG_BODY_MAX_CHARS = 2000`, HTML replaced with `[HTML content omitted]`
-- Response accumulation cap: `MAX_RESPONSE_LOG_BYTES = 50_000`
-- Keepalive comments filtered from debug accumulation
+- Compact structured logs via `logEvent()`
+- Debug HTTP logging with request IDs and MCP method hints
 - Optional file logging via `TASKSYNC_LOG_FILE`
 
 ## UI State
 - SSE push from `/events`; broadcasts on session and waiter lifecycle transitions
 - Target session resolution: requested → active UI → first live → default constant
-- Wait banner: live elapsed timer via `setInterval(1s)` using `waitStartedAt` from payload
-- Session list: metadata line (created time, active ago, waiting duration), stale visual dimming
-- Prune button shows stale count, auto-disabled when 0
+- Wait banner with live elapsed timer

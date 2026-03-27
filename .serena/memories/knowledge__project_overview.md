@@ -1,22 +1,41 @@
-Updated 2026-03-10.
+Updated 2026-03-27.
 
-`tasksync-mcp` is a Streamable HTTP MCP server focused on iterative human feedback loops for coding agents through the `get_feedback` tool.
+`tasksync-mcp` provides iterative human feedback loops for coding agents through the `get_feedback` tool.
 
-Key features:
-- `get_feedback` blocks until feedback arrives. Connection kept alive by SSE comment keepalive (`: keepalive\n\n` every 30s).
-- Default mode: no timeout, no [WAITING] — waits indefinitely with keepalive.
-- Legacy heartbeat mode (`--heartbeat`): returns [WAITING] on timeout, agent re-POSTs.
-- Feedback UI is embedded by default and uses SSE (`/events`) for live updates.
-- UI shows two-column layout: composer/history (left), sessions/settings (right).
-- Image support: paste, drag-drop, or attach images in the feedback UI. Images sent as base64 in `POST /feedback`, returned to agents as MCP `ImageContent` blocks alongside text. History shows thumbnails with lightbox zoom.
-- Markdown toolbar: formatting buttons (Bold, Italic, Code, etc.), keyboard shortcuts (Ctrl+B/I/K/`), Tab indent, auto-continue lists.
-- Per-session submitted feedback history stored in bounded form and exposed via `/feedback/history`.
-- Session/feedback metadata persisted locally in `.tasksync/session-state.json`.
-- Replay is transient/in-memory only; stale pre-restart session IDs are invalid.
-- Optional file logging via `TASKSYNC_LOG_FILE`; debug mode adds HTTP payload logging with request IDs.
+## Two Integration Paths
 
-Agent prompt variants:
-- `task-sync-agent-opencode.md` / `task-sync-agent-copilot.md` — default (keepalive, no [WAITING])
-- `task-sync-agent-opencode-waiting.md` / `task-sync-agent-copilot-waiting.md` — heartbeat mode
+| Path | Best for | Setup |
+|------|----------|-------|
+| **OpenCode Plugin** | OpenCode users | Add to plugin array, zero config |
+| **MCP Server** | VS Code Copilot, Claude Desktop, any MCP client | Start server, configure MCP endpoint |
 
-Stack: TypeScript, Node.js, Express, `@modelcontextprotocol/sdk`, Jest/ts-jest
+## Key Features
+- `get_feedback` blocks until feedback arrives (SSE keepalive for MCP, long-poll for plugin)
+- Web-based feedback UI with multi-session support, image attachments, markdown toolbar
+- Desktop/sound notifications when agent is waiting
+- Session persistence across server restarts
+- Auto-prune of stale sessions
+- Agent prompt injection (OpenCode plugin auto-injects daemon agent + optional augmentation)
+
+## File Structure
+- `index.ts` — Main server (~1200 lines): MCP transport, UI server, REST API
+- `session-manager.ts` — Session lifecycle, feedback state, aliases, auto-prune (~700 lines)
+- `session-state-store.ts` — File-backed persistence
+- `feedback-html.ts` + supporting scripts — Embedded web UI
+- `stream-event-store.ts` — MCP-specific transient SSE replay
+- `opencode-plugin/` — Standalone OpenCode plugin package (thin HTTP client)
+  - `src/index.ts` — Plugin entry (tools, config hook, event hook)
+  - `src/config.ts` — Config loader (`.tasksync/config.json` global + project + env vars)
+  - `src/daemon-prompt.ts` — Full standalone daemon agent prompt
+  - `src/daemon-overlay.ts` — Full overlay for augmented agents
+  - `src/daemon-overlay-compact.ts` — Compact overlay
+
+## Agent Prompt Files
+- `task-sync-agent-opencode.md` — OpenCode daemon prompt (MCP mode, uses `tasksync_get_feedback`)
+- `task-sync-agent-copilot.md` — VS Code Copilot daemon prompt
+
+## Stack
+TypeScript, Node.js, Express, `@modelcontextprotocol/sdk`, Jest/ts-jest
+
+## Branch: `simple-prune`
+Active development branch. Main has stable baseline.

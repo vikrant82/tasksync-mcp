@@ -46,8 +46,8 @@ export type FeedbackChannelState = {
 };
 
 export type StreamableSessionEntry = {
-  transport: StreamableHTTPServerTransport;
-  server: Server;
+  transport?: StreamableHTTPServerTransport;
+  server?: Server;
   transportId: string;
   clientAlias: string;
   clientGeneration: number | null;
@@ -152,8 +152,8 @@ export class SessionManager {
 
   createSession(
     sessionId: string,
-    transport: StreamableHTTPServerTransport,
-    server: Server,
+    transport: StreamableHTTPServerTransport | undefined,
+    server: Server | undefined,
     transportId: string,
     clientAlias: string,
     clientGeneration: number | null
@@ -224,9 +224,11 @@ export class SessionManager {
     // Clear any pending waiter
     await this.clearPendingWaiter(sessionId, reason);
 
-    // Close transport
+    // Close transport (if present — external sessions have no transport)
     try {
-      await entry.transport.close();
+      if (entry.transport) {
+        await entry.transport.close();
+      }
     } catch (err) {
       this.log("error", "session.close.transport_error", { sessionId, error: String(err) });
     }
@@ -604,7 +606,16 @@ export class SessionManager {
       }
     }
 
+    // If the active UI session was pruned, reset to the next available session
     if (pruned > 0) {
+      if (!this.sessions.has(this.activeUiSessionId)) {
+        const nextSession = this.sessions.keys().next().value as string | undefined;
+        this.activeUiSessionId = nextSession ?? "";
+        this.store.setActiveUiSessionId(this.activeUiSessionId);
+        this.log("info", "session.active-ui-reset-after-prune", {
+          newActiveUiSessionId: this.activeUiSessionId || "(none)",
+        });
+      }
       this.events.onStateChange();
     }
 
