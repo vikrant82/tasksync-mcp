@@ -1,6 +1,6 @@
 {
   "name": "tasksync-mcp",
-  "version": "1.0.11",
+  "version": "1.0.12",
   "description": "TaskSync MCP server — persistent daemon feedback loop for AI coding agents",
   "license": "MIT",
   "author": "vikrant82",
