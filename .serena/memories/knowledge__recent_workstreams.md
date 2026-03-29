@@ -1,14 +1,18 @@
-Updated: 2026-03-27
+Updated: 2026-03-28
 
-## Active: OpenCode Plugin (Detached Server Architecture)
-- Branch: `simple-prune`
-- Status: **Working** — tested successfully, feedback loop holds open correctly
-- Server-side: `res.on('close')` for client disconnect (NOT `req` — Express body parser consumes `req` stream)
-- Plugin: `opencode-plugin/` — thin HTTP client connecting to server REST API
-- Config: `.tasksync/config.json` (global `~/.tasksync/` + project `.tasksync/`) with env var overrides
-- Bug fixed: `req.on('close')` fired immediately (1ms) → changed to `res.on('close')` for proper long-poll
-- Bug fixed: `pruneStale()` now resets `activeUiSessionId` when active session is pruned
-- Docs: README, OPENCODE_PLUGIN.md, API_SPEC.md, SESSION_WORKFLOW.md all updated
+## Next Up: Plugin Image Support
+- Plugin `get_feedback` returns text only (OpenCode tool limitation: `execute()` returns `Promise<string>`)
+- MCP path already supports full `ImageContent` blocks
+- Need to explore: can images be injected via `client.session.prompt()` SDK, or base64-encoded in text?
+- Related memory: `knowledge__mcp_image_support`
+
+## Completed: OpenCode Plugin v1.0.0 (March 2026)
+- Published to npm as `opencode-tasksync@1.0.0`
+- Detached server architecture: thin HTTP client → server REST API
+- Config hook: injects `daemon` agent + optional augmentation of existing agents
+- Three doc files explain "why plugin over MCP" (agent augmentation advantage)
+- Config: `.tasksync/config.json` (global `~/.tasksync/` + project `.tasksync/` + env vars)
+- Key bug fixes: `res.on('close')` not `req`, prune resets activeUiSessionId
 - Previous monorepo approach parked on `opencode-plugin` branch
 
 ## Completed: Simple Prune Integration (March 2026)

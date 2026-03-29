@@ -566,6 +566,15 @@ export class SessionManager {
         continue;
       }
 
+      // Protected: plugin sessions (no MCP transport) are stateless HTTP clients
+      // that always reconnect. They don't have a transport lifecycle signal, so
+      // auto-prune would incorrectly kill them during gaps between tool calls
+      // (e.g., while the agent processes feedback before calling get_feedback again).
+      // Plugin sessions are cleaned up via: session.deleted events, manual prune, or UI delete.
+      if (!entry.transport) {
+        continue;
+      }
+
       const lastActivity = Date.parse(entry.lastActivityAt);
       if (isNaN(lastActivity)) continue;
 

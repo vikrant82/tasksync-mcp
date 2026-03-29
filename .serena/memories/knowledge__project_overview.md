@@ -37,5 +37,6 @@ Updated 2026-03-27.
 ## Stack
 TypeScript, Node.js, Express, `@modelcontextprotocol/sdk`, Jest/ts-jest
 
-## Branch: `simple-prune`
-Active development branch. Main has stable baseline.
+## Branch: `main`
+All work merged. Published: `tasksync-mcp-http@1.0.0` (server), `opencode-tasksync@1.0.0` (plugin).
+Old branches: `simple-prune` (merged), `opencode-plugin` (parked monorepo approach).
