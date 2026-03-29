@@ -103,7 +103,7 @@ If you prefer MCP over the plugin:
 The web UI (`http://localhost:3456`) provides:
 
 - **Multi-session support**: Route feedback to different agent sessions
-- **Image attachments**: Paste, drag-drop, or file-pick images (MCP mode only)
+- **Image attachments**: Paste, drag-drop, or file-pick images (MCP returns native `ImageContent`; plugin saves to temp files + experimental native injection)
 - **Markdown toolbar**: Bold, italic, code, lists, headings with keyboard shortcuts
 - **Live status**: See which sessions are waiting, idle, or have queued feedback
 - **Desktop notifications**: Get alerted when an agent is waiting for you

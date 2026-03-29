@@ -156,7 +156,7 @@ Sessions are auto-registered on first `get_feedback` call. Cleanup happens on `s
 
 ## Limitations
 
-- **No image support in responses**: OpenCode plugin tools return strings only. Images attached in the feedback UI are not delivered to the agent. (The MCP integration supports full `ImageContent` blocks.)
+- **Image support is best-effort**: When users attach images, the plugin saves them to temp files and includes file paths in the response text (agents can read these with file tools). An experimental hook also attempts to inject images as native content, but this depends on OpenCode's internal handling of `FilePart` attachments. The MCP integration provides full native `ImageContent` blocks.
 - **Server must be running**: The plugin connects to an external server. If the server is down, `get_feedback` calls will fail.
 - **One server instance**: Multiple OpenCode instances share the same TaskSync server and feedback UI.
 

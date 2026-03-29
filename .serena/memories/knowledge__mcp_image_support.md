@@ -20,6 +20,30 @@ Updated: 2026-03-18
 - **VS Code Copilot**: Unknown — needs testing
 - **Cursor**: Unknown — needs testing
 
+### OpenCode Plugin Image Support (IMPLEMENTED — March 2026)
+
+Two-layer approach since plugin `tool.execute()` returns `Promise<string>` only:
+
+**Layer 1 — Temp Files (Reliable Fallback)**
+- Images saved to `$TMPDIR/tasksync-images/<sessionId>/image-N.<ext>`
+- Tool returns: `"<feedback text>\n\n[User attached N image(s): <paths>]"`
+- Agents can read images via file-reading tools (e.g., MCP `Read` tool supports images)
+
+**Layer 2 — experimental.chat.messages.transform Hook (Best-Effort)**
+- Images cached in module-level `pendingImages` Map keyed by UUID ref
+- Ref stored in tool state via `context.metadata({ metadata: { imageRef } })`
+- Transform hook scans message history for `get_feedback` ToolParts with matching `imageRef`
+- Injects `FilePart` entries with `data:` URIs into `ToolStateCompleted.attachments`
+- Whether Go backend maps these to native LLM image content is **untested** (Go plugin code not public)
+- Pattern validated against community plugins: `opencode-vibeguard` (text redaction) and `opencode-dynamic-context-pruning` (message pruning) both use this hook successfully for message mutation
+
+**Key Constraints Discovered:**
+- Plugin `tool.execute()` → `Promise<string>` only (no structured content)
+- Go `ToolResult.Content` is string-only; providers send string to LLM APIs
+- `ToolStateCompleted.attachments` exists in TypeScript types but Go-side handling is opaque
+- Go public repo (github.com/opencode-ai/opencode) predates plugin system; plugin IPC is not visible
+- `@opencode-ai/plugin@1.3.3`, `@opencode-ai/sdk@1.3.3` are latest versions
+
 ### Design Decision
 Implemented MCP-spec-correct `ImageContent` blocks despite opencode's current limitation because:
 1. Correct protocol behavior per MCP specification

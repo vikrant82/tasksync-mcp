@@ -77,7 +77,7 @@ Environment variable overrides: `TASKSYNC_SERVER_URL`, `TASKSYNC_AUGMENT_AGENTS`
 
 The plugin connects to your TaskSync server via REST:
 
-1. **`get_feedback` tool** — Long-polls `POST /api/wait/:sessionId` until feedback is submitted
+1. **`get_feedback` tool** — Long-polls `POST /api/wait/:sessionId` until feedback is submitted. Supports image attachments (saved to temp files; experimental native injection via transform hook)
 2. **Config hook** — Injects a `daemon` agent + augments specified agents
 3. **Event hook** — Cleans up sessions on deletion
 
