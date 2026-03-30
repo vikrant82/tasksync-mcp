@@ -1,32 +1,32 @@
 # opencode-tasksync
 
-OpenCode plugin for [TaskSync](https://github.com/vikrant82/tasksync-mcp) — adds a persistent daemon feedback loop to your AI coding agents.
+[OpenCode](https://opencode.ai) plugin for **[TaskSync](https://github.com/vikrant82/tasksync-mcp)** — human-in-the-loop feedback for AI coding agents.
 
-## Why use this instead of MCP?
+Your agents call `get_feedback`, you reply via the web UI or Telegram, they keep working. Connections survive server restarts. Images appear natively in the conversation. Remote mode lets you respond from your phone.
 
-With MCP, you get a tool but agents don't know to use it — you'd have to paste daemon prompts into each agent manually. This plugin **injects feedback loop behavior automatically**: a dedicated `daemon` agent plus optional augmentation of your existing agents (`ask`, `build`, `plan`). Your agents start calling `get_feedback` between tasks with zero prompt editing.
+## What You Get
 
-## What it does
-
-- Adds a `get_feedback` tool that blocks until you submit feedback via the TaskSync web UI
-- Injects a **daemon agent** that maintains a continuous work-feedback loop
-- Optionally augments your existing agents (ask, build, etc.) with the same feedback protocol
-- **Session resiliency** — SSE keepalives prevent idle timeouts, and the plugin silently reconnects through server restarts with exponential backoff. Agents never see transient errors.
-- **Remote mode** — When enabled, the plugin sends the agent's current context to the server, which forwards it as a Telegram notification. Reply from your phone — the agent gets your feedback instantly.
+- **`get_feedback` tool** — Blocks until you submit feedback via the TaskSync web UI or Telegram
+- **`daemon` agent** — Pre-configured agent that maintains a continuous work → feedback → work loop
+- **Agent augmentation** — Inject the feedback loop into your existing agents (`coder`, `ask`, `build`) with one config line
+- **Unbreakable connections** — SSE with keepalives + automatic reconnection through server restarts and network blips (1s → 15s exponential backoff). The agent never sees transient errors.
+- **Native images** — Attached images injected directly into the LLM conversation via `tool.execute.after` hook. No temp files.
+- **Remote mode** — Get Telegram notifications with the agent's context when it's waiting. Quick-reply buttons or free-text responses, delivered straight back to the agent.
+- **FYI updates** — When the agent works for 30+ seconds without asking for feedback, you get a status update on Telegram.
 
 ## Prerequisites
 
-You need a running TaskSync server. Install and start it:
+Start the TaskSync server:
 
 ```bash
-npx tasksync-mcp-http --port=3011 --ui-port=3456
+npx tasksync-mcp-http
 ```
 
-This starts the MCP server (port 3011) and web UI (port 3456).
+For remote mode, also set up a [Telegram bot](https://github.com/vikrant82/tasksync-mcp#remote-mode-telegram).
 
-## Installation
+## Install
 
-Add to your `opencode.json`:
+Add to `~/.config/opencode/opencode.json`:
 
 ```json
 {
@@ -34,28 +34,9 @@ Add to your `opencode.json`:
 }
 ```
 
-That's it. OpenCode auto-installs npm plugins at startup.
+OpenCode auto-installs npm plugins at startup. Start OpenCode — a `daemon` agent is immediately available.
 
-### Local development
-
-For development from source:
-
-```bash
-cd opencode-plugin
-npm install && npm run build
-```
-
-Then point to the local path in `opencode.json`:
-
-```json
-{
-  "plugin": ["/path/to/tasksync-mcp/opencode-plugin"]
-}
-```
-
-Rebuild with `npm run build` after changes, then restart OpenCode.
-
-## Configuration
+## Configure
 
 Create `~/.tasksync/config.json` (global) or `.tasksync/config.json` (project):
 
@@ -71,19 +52,38 @@ Create `~/.tasksync/config.json` (global) or `.tasksync/config.json` (project):
 |---------|---------|-------------|
 | `serverUrl` | `http://localhost:3456` | TaskSync server URL |
 | `augmentAgents` | `[]` | Agents to augment with feedback loop (`["*"]` for all) |
-| `overlayStyle` | `"full"` | Overlay detail: `"full"` or `"compact"` |
+| `overlayStyle` | `"full"` | Overlay detail: `"full"` (120 lines) or `"compact"` (50 lines) |
 
-Environment variable overrides: `TASKSYNC_SERVER_URL`, `TASKSYNC_AUGMENT_AGENTS` (comma-separated), `TASKSYNC_OVERLAY_STYLE`.
+Environment overrides: `TASKSYNC_SERVER_URL`, `TASKSYNC_AUGMENT_AGENTS` (comma-separated), `TASKSYNC_OVERLAY_STYLE`.
 
-## How it works
+## How It Works
 
-The plugin connects to your TaskSync server via SSE (Server-Sent Events):
+1. **SSE transport** — `get_feedback` opens an SSE stream to the server. 30-second keepalives prevent idle timeouts. If the connection drops, the plugin retries silently with exponential backoff.
+2. **Agent context capture** — The `experimental.text.complete` hook captures the agent's response text before tool execution. This text is forwarded to Telegram when remote mode is enabled.
+3. **Native image injection** — The `tool.execute.after` hook injects feedback images as `FilePart` attachments on the tool result, so the LLM sees them directly.
+4. **FYI timer** — If the agent writes text but doesn't call `get_feedback` within 30 seconds, a status update is sent to your notification channels.
+5. **Config injection** — The plugin adds a `daemon` agent and optionally augments existing agents with the feedback loop protocol.
 
-1. **`get_feedback` tool** — Opens an SSE stream to `GET /api/stream/:sessionId`. The server sends 30-second keepalives to prevent idle timeouts. When feedback arrives, it's delivered as an SSE event and the stream closes. If the connection drops (server restart, network glitch), the plugin automatically reconnects with exponential backoff (1s → 2s → 4s → … → 15s cap) — the agent never sees the interruption.
-2. **Config hook** — Injects a `daemon` agent + augments specified agents
-3. **Event hook** — Cleans up sessions on deletion
+## Local Development
 
-The daemon agent prompt enforces a mandatory feedback loop: every response must end with a `get_feedback` call, creating a persistent work session.
+```bash
+cd opencode-plugin
+npm install && npm run build
+```
+
+Point to the local path in `opencode.json`:
+
+```json
+{
+  "plugin": ["/path/to/tasksync-mcp/opencode-plugin"]
+}
+```
+
+Rebuild with `npm run build` after changes, then restart OpenCode.
+
+## Full Documentation
+
+See the **[OpenCode Plugin Guide](https://github.com/vikrant82/tasksync-mcp/blob/main/docs/OPENCODE_PLUGIN.md)** for agent augmentation, overlay styles, remote mode setup, and troubleshooting.
 
 ## License
 
