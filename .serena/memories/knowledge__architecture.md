@@ -62,6 +62,21 @@ Runtime centered in `index.ts` with two Express apps:
 - Debug HTTP logging with request IDs and MCP method hints
 - Optional file logging via `TASKSYNC_LOG_FILE`
 
+## Remote Mode (Notification Channels)
+- `channels.ts`: `ChannelManager` + `TelegramChannel` implementation
+- `NotificationChannel` interface: `name`, `initialize()`, `notify()`, `onFeedback()`, `shutdown()`
+- `ChannelManager`: dispatches to all active channels, routes feedback via callback
+- Telegram: grammY bot + `@grammyjs/runner` (non-blocking long polling)
+  - `/start` registers chatId, persisted to `~/.tasksync/telegram-chats.json`
+  - Text replies → feedback delivery to active session
+  - Inline keyboard: Approve/Reject/Continue quick-reply buttons
+- Config: `TASKSYNC_TELEGRAM_BOT_TOKEN` env / `--telegram-token` CLI arg
+- Server: `channelManager.notify()` triggered when waiter set + session has `remoteEnabled`
+- Plugin: `experimental.text.complete` hook caches agent text → sent as base64 `X-Agent-Context` header
+- Session state: `remoteEnabled` boolean (persisted), `agentContext` string (runtime)
+- UI: toggle button per session, `channelsAvailable` flag
+- Endpoints: `POST /sessions/:id/remote`, `GET /channels`
+
 ## UI State
 - SSE push from `/events`; broadcasts on session and waiter lifecycle transitions
 - Target session resolution: requested → active UI → first live → default constant
