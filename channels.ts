@@ -288,7 +288,7 @@ export class TelegramChannel implements NotificationChannel {
         params.context.length > 1500
           ? params.context.slice(0, 1500) + "…"
           : params.context;
-      msg += `${this.escapeHtml(truncated)}\n\n`;
+      msg += `${this.markdownToTelegramHtml(truncated)}\n\n`;
     }
 
     msg += `<a href="${params.feedbackUrl}">Open in browser</a>`;
@@ -311,6 +311,47 @@ export class TelegramChannel implements NotificationChannel {
       .replace(/&/g, "&amp;")
       .replace(/</g, "&lt;")
       .replace(/>/g, "&gt;");
+  }
+
+  /** Convert common markdown patterns to Telegram HTML. Escapes HTML first for safety. */
+  private markdownToTelegramHtml(text: string): string {
+    let html = this.escapeHtml(text);
+
+    // Code blocks: ```lang\n...\n``` → <pre><code>...</code></pre>
+    html = html.replace(/```(?:\w*)\n([\s\S]*?)```/g, "<pre><code>$1</code></pre>");
+
+    // Inline code: `...` → <code>...</code>
+    html = html.replace(/`([^`]+)`/g, "<code>$1</code>");
+
+    // Bold+italic: ***text*** or ___text___
+    html = html.replace(/\*{3}(.+?)\*{3}/g, "<b><i>$1</i></b>");
+
+    // Bold: **text** or __text__
+    html = html.replace(/\*{2}(.+?)\*{2}/g, "<b>$1</b>");
+    html = html.replace(/_{2}(.+?)_{2}/g, "<b>$1</b>");
+
+    // Italic: *text* or _text_ (but not inside words like foo_bar_baz)
+    html = html.replace(/(?<!\w)\*([^*]+?)\*(?!\w)/g, "<i>$1</i>");
+    html = html.replace(/(?<!\w)_([^_]+?)_(?!\w)/g, "<i>$1</i>");
+
+    // Strikethrough: ~~text~~
+    html = html.replace(/~~(.+?)~~/g, "<s>$1</s>");
+
+    // Headers: # text → bold (Telegram has no native headers)
+    html = html.replace(/^#{1,6}\s+(.+)$/gm, "<b>$1</b>");
+
+    // Bullet lists: - item or * item → • item
+    html = html.replace(/^[\s]*[-*]\s+/gm, "• ");
+
+    // Numbered lists: 1. item → keep as-is (already readable)
+
+    // Links: [text](url) → <a href="url">text</a>
+    html = html.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2">$1</a>');
+
+    // Blockquotes: > text → "text" (Telegram has blockquote but only in recent clients)
+    html = html.replace(/^&gt;\s?(.+)$/gm, "┃ <i>$1</i>");
+
+    return html;
   }
 }
 
