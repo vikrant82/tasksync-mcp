@@ -1,9 +1,11 @@
 Updated: 2026-03-30
 
-## Next Up: Layer 2 Image Investigation
-- Layer 1 (temp files) is reliable — images saved to `$TMPDIR/tasksync-images/<sessionId>/`
-- Layer 2 (experimental.chat.messages.transform hook) still broken — `context.metadata({ imageRef })` not surfacing on completed tool parts
-- Related memory: `knowledge__mcp_image_support`
+## Completed: Native Image Injection (March 2026, branch `feat/layer2-image-injection`)
+- Root-caused Layer 2 failure: `fromPlugin()` discards callback metadata, `experimental.chat.messages.transform` never saw `imageRef`
+- Switched to `tool.execute.after` hook — injects `FilePart` attachments with PartBase fields directly on tool result
+- First attempt failed: missing id/sessionID/messageID fields → zod validation error. Fixed by generating PartBase-compliant IDs.
+- Removed Layer 1 (temp files) — redundant after native injection works. Preserved in `ref/layer1-temp-files` branch.
+- Related memory: `knowledge__mcp_image_support`, `knowledge__layer1_temp_files`
 
 ## Completed: SSE Plugin Transport + Session Resiliency (March 2026, branch `feat/sse-plugin-wait`)
 - Replaced POST long-poll (`/api/wait/:sessionId`) with SSE (`GET /api/stream/:sessionId`)

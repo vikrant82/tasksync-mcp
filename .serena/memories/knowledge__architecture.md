@@ -37,7 +37,7 @@ Runtime centered in `index.ts` with two Express apps:
 ## Feedback Flow
 - Waiter pattern: `setWaiter()` → `deliverFeedback()` (resolves) or `clearPendingWaiter()` (cancels)
 - Queued feedback: `consumeQueuedFeedback()` returns immediately if feedback was submitted before wait
-- Image support: MCP returns `TextContent + ImageContent` blocks; plugin returns text-only string
+- Image support: MCP returns `TextContent + ImageContent` blocks; plugin injects native `FilePart` attachments via `tool.execute.after` hook
 - `formatFeedbackResponse()` creates MCP content blocks
 
 ## Plugin REST API (on UI server port)
@@ -52,6 +52,7 @@ Runtime centered in `index.ts` with two Express apps:
 - Retry loop in `execute()`: exponential backoff (1s → 2s → 4s → 8s → 15s cap), only `context.abort` terminates
 - `NON_RETRYABLE_REASONS`: `session_deleted`, `session_pruned` — permanent closes that stop retry
 - Config hook: always injects `daemon` agent + optional augmentation of other agents
+- `tool.execute.after` hook: injects images as native `FilePart` attachments with PartBase fields
 - Event hook: cleans up on `session.deleted`
 - Config from `.tasksync/config.json` (global `~/.tasksync/` → project `.tasksync/` → env vars)
 - OpenCode rejects unknown keys in `opencode.json`, so config uses dedicated files

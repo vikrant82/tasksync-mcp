@@ -19,7 +19,7 @@ npx tasksync-mcp-http --port=3011 --ui-port=3456
 | **Setup** | Drop-in plugin, zero config | Configure MCP endpoint in your client |
 | **Agent behavior** | Injects feedback loop into your existing agents | Manual — paste daemon prompt yourself |
 | **Feedback tool** | `get_feedback` (native tool) | `tasksync_get_feedback` (MCP-prefixed) |
-| **Image support** | Temp files + experimental native injection | Full MCP `ImageContent` blocks |
+| **Image support** | Native injection via `tool.execute.after` hook | Full MCP `ImageContent` blocks |
 
 ### Why OpenCode users should prefer the plugin
 
@@ -97,7 +97,7 @@ If you prefer MCP over the plugin:
 The web UI (`http://localhost:3456`) provides:
 
 - **Multi-session support**: Route feedback to different agent sessions
-- **Image attachments**: Paste, drag-drop, or file-pick images (MCP returns native `ImageContent`; plugin saves to temp files + experimental native injection)
+- **Image attachments**: Paste, drag-drop, or file-pick images (MCP returns native `ImageContent`; plugin injects native `FilePart` attachments)
 - **Markdown toolbar**: Bold, italic, code, lists, headings with keyboard shortcuts
 - **Live status**: See which sessions are waiting, idle, or have queued feedback
 - **Desktop notifications**: Get alerted when an agent is waiting for you
