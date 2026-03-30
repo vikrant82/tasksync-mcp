@@ -34,8 +34,8 @@ Two-layer approach since plugin `tool.execute()` returns `Promise<string>` only:
 - Ref stored in tool state via `context.metadata({ metadata: { imageRef } })`
 - Transform hook scans message history for `get_feedback` ToolParts with matching `imageRef`
 - Injects `FilePart` entries with `data:` URIs into `ToolStateCompleted.attachments`
-- Whether Go backend maps these to native LLM image content is **untested** (Go plugin code not public)
-- Pattern validated against community plugins: `opencode-vibeguard` (text redaction) and `opencode-dynamic-context-pruning` (message pruning) both use this hook successfully for message mutation
+- Community-plugin pattern was valid, and a real TaskSync/OpenCode test on 2026-03-29 showed the model could directly inspect an attached screenshot delivered from a `get_feedback` tool result
+- This is strong evidence the OpenCode path can surface tool-result image attachments to the model in practice
 
 **Key Constraints Discovered:**
 - Plugin `tool.execute()` → `Promise<string>` only (no structured content)

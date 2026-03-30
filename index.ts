@@ -3,6 +3,7 @@
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { AsyncLocalStorage } from "node:async_hooks";
+import { createRequire } from "node:module";
 import {
   CallToolRequestSchema,
   ListToolsRequestSchema,
@@ -41,10 +42,15 @@ const feedbackTimeout = heartbeat
   : 0; // heartbeat=false → no timeout, wait indefinitely (keepalive keeps connection alive)
 const logLevel = (process.env.TASKSYNC_LOG_LEVEL || "info").toLowerCase();
 const logFilePath = process.env.TASKSYNC_LOG_FILE?.trim() || "";
+const require = createRequire(import.meta.url);
+const { version: taskSyncServerVersion = "0.0.0" } = require("../package.json") as {
+  version?: string;
+};
 
 const DEFAULT_FEEDBACK_SESSION = "__default__";
 const STREAM_RETRY_INTERVAL_MS = 2000;
 const KEEPALIVE_INTERVAL_MS = 30000; // 30s SSE comment keepalive to prevent HTTP connection timeout
+const PLUGIN_WAIT_TIMEOUT_MS = 25000;
 const AUTO_PRUNE_INTERVAL_MS = 60 * 1000; // check for auto-prune every 1 minute
 const DEFAULT_DISCONNECT_AFTER_MINUTES = 20; // prune sessions inactive for >20 minutes by default
 const MIN_DISCONNECT_AFTER_MINUTES = 1;
@@ -654,6 +660,21 @@ function registerServerHandlers(targetServer: Server) {
             };
           }
 
+          if (result.type === "timeout") {
+            clearKeepalive("poll_timeout");
+            logEvent("debug", "feedback.wait.poll_timeout", {
+              sessionId,
+              requestId,
+              waitId,
+              waitStartedAt,
+              waitDurationMs: Date.now() - Date.parse(waitStartedAt),
+              keepalivesSent: keepaliveSentCount,
+            });
+            return {
+              content: [{ type: "text", text: "[WAITING] No new feedback yet. Call get_feedback again to continue waiting." }],
+            };
+          }
+
           clearKeepalive("feedback_received");
           logEvent("debug", "feedback.return.live", {
             sessionId,
@@ -689,7 +710,7 @@ function registerServerHandlers(targetServer: Server) {
 
 function createSessionServer(): Server {
   const sessionServer = new Server(
-    { name: "tasksync-server", version: "1.0.0" },
+    { name: "tasksync-server", version: taskSyncServerVersion },
     { capabilities: { tools: {}, logging: {} } }
   );
   registerServerHandlers(sessionServer);
@@ -966,6 +987,16 @@ function startFeedbackUI() {
 
     logEvent("info", "api.wait.started", { sessionId, waitId });
 
+    const timeoutHandle = setTimeout(() => {
+      void sessionManager.clearPendingWaiter(
+        sessionId,
+        "poll_timeout",
+        waitId,
+        { type: "timeout", retryAfterMs: 0 }
+      );
+      logEvent("debug", "api.wait.timeout", { sessionId, waitId, timeoutMs: PLUGIN_WAIT_TIMEOUT_MS });
+    }, PLUGIN_WAIT_TIMEOUT_MS);
+
     // Clean up if client disconnects (plugin abort signal cancels fetch).
     // IMPORTANT: Listen on `res`, not `req`. The request stream is already consumed
     // by Express's body parser, so req's 'close' fires immediately. The response's
@@ -973,6 +1004,7 @@ function startFeedbackUI() {
     let resolved = false;
     res.on("close", () => {
       if (!resolved) {
+        clearTimeout(timeoutHandle);
         sessionManager.clearPendingWaiter(sessionId, "client_disconnected", waitId);
         logEvent("info", "api.wait.client_disconnected", { sessionId, waitId });
       }
@@ -981,6 +1013,7 @@ function startFeedbackUI() {
     try {
       const result = await promise;
       resolved = true;
+      clearTimeout(timeoutHandle);
       logEvent("info", "api.wait.resolved", {
         sessionId,
         waitId,
@@ -990,14 +1023,15 @@ function startFeedbackUI() {
       res.json(result);
     } catch (err) {
       resolved = true;
+      clearTimeout(timeoutHandle);
       logEvent("error", "api.wait.error", { sessionId, waitId, error: String(err) });
       res.status(500).json({ error: String(err) });
     }
   });
 
   feedbackApp.listen(uiPort, () => {
-    logEvent("info", "ui.started", { uiPort });
-    console.error(`Feedback UI running at http://localhost:${uiPort}`);
+    logEvent("info", "ui.started", { uiPort, version: taskSyncServerVersion });
+    console.error(`TaskSync Feedback UI v${taskSyncServerVersion} running at http://localhost:${uiPort}`);
   });
 
   // Auto-prune stale sessions periodically
@@ -1214,7 +1248,7 @@ async function runStreamableHTTPServer() {
     res.json({
       status: "ok",
       server: "tasksync-mcp",
-      version: "1.0.0",
+      version: taskSyncServerVersion,
       transport: "streamable-http",
       sessions: getAllSessions().size,
       persistence: "file-backed minimal session state; transient in-memory replay",
@@ -1223,6 +1257,7 @@ async function runStreamableHTTPServer() {
 
   app.listen(mcpPort, () => {
     logEvent("info", "server.started", {
+      version: taskSyncServerVersion,
       mcpPort,
       uiEnabled: !noUI,
       uiPort,
@@ -1231,7 +1266,9 @@ async function runStreamableHTTPServer() {
       keepaliveIntervalMs: KEEPALIVE_INTERVAL_MS,
       logLevel,
     });
-    console.error(`TaskSync MCP Server running on Streamable HTTP at http://localhost:${mcpPort}`);
+    console.error(
+      `TaskSync MCP Server v${taskSyncServerVersion} running on Streamable HTTP at http://localhost:${mcpPort}`
+    );
     console.error(`MCP endpoint: http://localhost:${mcpPort}/mcp`);
     console.error(`Health check: http://localhost:${mcpPort}/health`);
   });

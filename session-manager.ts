@@ -58,7 +58,8 @@ export type StreamableSessionEntry = {
 
 export type PendingFeedbackResult =
   | { type: "feedback"; content: string; images?: ImageAttachment[] }
-  | { type: "closed"; reason: string };
+  | { type: "closed"; reason: string }
+  | { type: "timeout"; retryAfterMs: number };
 
 export type SessionInfo = {
   sessionId: string;
@@ -326,7 +327,12 @@ export class SessionManager {
     this.events.onStateChange(sessionId);
   }
 
-  async clearPendingWaiter(sessionId: string, reason: string, expectedRequestId?: string): Promise<void> {
+  async clearPendingWaiter(
+    sessionId: string,
+    reason: string,
+    expectedRequestId?: string,
+    result?: PendingFeedbackResult
+  ): Promise<void> {
     const state = this.feedbackState.get(sessionId);
     if (!state || !state.pendingWaiter) return;
 
@@ -337,7 +343,7 @@ export class SessionManager {
     await this.persistFeedbackState(sessionId);
     this.events.onStateChange(sessionId);
 
-    waiter.resolve({ type: "closed", reason });
+    waiter.resolve(result ?? { type: "closed", reason });
 
     this.log("warn", "feedback.waiter.cleared", {
       sessionId,

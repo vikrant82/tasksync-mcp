@@ -5,6 +5,7 @@ import { DAEMON_AGENT_PROMPT } from "./daemon-prompt.js";
 import { DAEMON_OVERLAY_FULL } from "./daemon-overlay.js";
 import { DAEMON_OVERLAY_COMPACT } from "./daemon-overlay-compact.js";
 import { mkdirSync, writeFileSync } from "fs";
+import { createRequire } from "module";
 import { tmpdir } from "os";
 import { join } from "path";
 
@@ -13,17 +14,57 @@ interface ImageAttachment {
   mimeType: string;
 }
 
+interface PendingImageBatch {
+  sessionId: string;
+  images: ImageAttachment[];
+}
+
+function summarizePart(part: any): Record<string, unknown> {
+  const state = part?.state;
+  const metadata = state?.metadata;
+
+  return {
+    type: part?.type,
+    tool: part?.tool,
+    callID: part?.callID,
+    hasState: Boolean(state),
+    stateStatus: state?.status,
+    stateKeys: state && typeof state === "object" ? Object.keys(state) : [],
+    metadataKeys: metadata && typeof metadata === "object" ? Object.keys(metadata) : [],
+    imageRefAtStateMetadata: metadata?.imageRef,
+    imageRefAtPartMetadata: part?.metadata?.imageRef,
+    attachmentCount: Array.isArray(state?.attachments) ? state.attachments.length : 0,
+  };
+}
+
+function logPluginEvent(event: string, details: Record<string, unknown> = {}): void {
+  console.error(`[tasksync] ${JSON.stringify({ ts: new Date().toISOString(), event, ...details })}`);
+}
+
 /**
  * Module-level cache for images received from feedback responses.
  * Keyed by a unique reference ID embedded in tool metadata.
  * Used by the experimental.chat.messages.transform hook to inject
  * images as FilePart entries into the message history.
  */
-const pendingImages = new Map<string, ImageAttachment[]>();
+const pendingImages = new Map<string, PendingImageBatch>();
+const require = createRequire(import.meta.url);
+const { version: taskSyncPluginVersion = "0.0.0" } = require("../package.json") as {
+  version?: string;
+};
+const WAIT_RETRY_DELAY_MS = 250;
 
 const plugin: Plugin = async ({ directory }) => {
   const config = loadConfig(directory);
   const serverUrl = config.serverUrl.replace(/\/+$/, "");
+
+  logPluginEvent("plugin.initialized", {
+    version: taskSyncPluginVersion,
+    serverUrl,
+    directory,
+    augmentAgents: config.augmentAgents,
+    overlayStyle: config.overlayStyle,
+  });
 
   const getFeedback = tool({
     description:
@@ -33,65 +74,165 @@ const plugin: Plugin = async ({ directory }) => {
     args: {},
     execute: async (_args, context) => {
       const sessionId = context.sessionID;
-
       try {
-        const resp = await fetch(`${serverUrl}/api/wait/${sessionId}`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          signal: context.abort,
-        });
+        let attempt = 0;
 
-        if (!resp.ok) {
-          const text = await resp.text().catch(() => "unknown error");
-          return `[TaskSync error: ${resp.status} ${text}]`;
-        }
+        while (true) {
+          attempt += 1;
+          logPluginEvent("plugin.feedback.wait.start", { sessionId, serverUrl, attempt });
 
-        const result = (await resp.json()) as
-          | { type: "feedback"; content: string; images?: ImageAttachment[] }
-          | { type: "closed"; reason: string };
+          const resp = await fetch(`${serverUrl}/api/wait/${sessionId}`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            signal: context.abort,
+          });
 
-        if (result.type === "closed") {
-          return `[Session closed: ${result.reason}]`;
-        }
+          logPluginEvent("plugin.feedback.wait.response", {
+            sessionId,
+            status: resp.status,
+            ok: resp.ok,
+            attempt,
+          });
 
-        if (result.images && result.images.length > 0) {
-          // Layer 1: Save images to temp files so agents can read them with file tools
-          const imageDir = join(tmpdir(), "tasksync-images", sessionId);
-          try {
-            mkdirSync(imageDir, { recursive: true });
-          } catch {}
+          if (!resp.ok) {
+            const text = await resp.text().catch(() => "unknown error");
+            logPluginEvent("plugin.feedback.wait.error_response", {
+              sessionId,
+              status: resp.status,
+              body: text,
+              attempt,
+            });
+            return `[TaskSync error: ${resp.status} ${text}]`;
+          }
 
-          const savedPaths: string[] = [];
-          for (let i = 0; i < result.images.length; i++) {
-            const img = result.images[i];
-            const ext = img.mimeType.split("/")[1] || "png";
-            const filePath = join(imageDir, `image-${i}.${ext}`);
-            try {
-              writeFileSync(filePath, Buffer.from(img.data, "base64"));
-              savedPaths.push(filePath);
-            } catch (err) {
-              console.error(`[tasksync] Failed to save image ${i}: ${err}`);
+          const result = (await resp.json()) as
+            | { type: "feedback"; content: string; images?: ImageAttachment[] }
+            | { type: "closed"; reason: string }
+            | { type: "timeout"; retryAfterMs?: number };
+
+          if (result.type === "timeout") {
+            logPluginEvent("plugin.feedback.wait.timeout", {
+              sessionId,
+              attempt,
+              retryAfterMs: result.retryAfterMs ?? 0,
+            });
+            const retryDelay = Math.max(0, result.retryAfterMs ?? WAIT_RETRY_DELAY_MS);
+            if (retryDelay > 0) {
+              await new Promise<void>((resolve, reject) => {
+                const timer = setTimeout(resolve, retryDelay);
+                const onAbort = () => {
+                  clearTimeout(timer);
+                  reject(new DOMException("Aborted", "AbortError"));
+                };
+                if (context.abort.aborted) {
+                  onAbort();
+                  return;
+                }
+                context.abort.addEventListener("abort", onAbort, { once: true });
+                setTimeout(() => context.abort.removeEventListener("abort", onAbort), retryDelay + 50);
+              });
             }
+            continue;
           }
 
-          // Layer 2 (experimental): Cache images for the transform hook to inject as FileParts.
-          // Use a unique ref so the transform hook can correlate images with this specific tool result.
-          const imageRef = crypto.randomUUID();
-          pendingImages.set(imageRef, result.images);
-          context.metadata({ metadata: { imageRef } });
-
-          if (savedPaths.length > 0) {
-            return `${result.content}\n\n[User attached ${savedPaths.length} image(s): ${savedPaths.join(", ")}]`;
+          if (result.type === "closed") {
+            logPluginEvent("plugin.feedback.closed", { sessionId, reason: result.reason, attempt });
+            return `[Session closed: ${result.reason}]`;
           }
+
+          logPluginEvent("plugin.feedback.received", {
+            sessionId,
+            contentLength: result.content.length,
+            imageCount: result.images?.length ?? 0,
+            attempt,
+          });
+
+          if (result.images && result.images.length > 0) {
+            // Layer 1: Save images to temp files so agents can read them with file tools
+            const imageDir = join(tmpdir(), "tasksync-images", sessionId);
+            logPluginEvent("plugin.image.layer1.start", {
+              sessionId,
+              imageCount: result.images.length,
+              imageDir,
+            });
+            try {
+              mkdirSync(imageDir, { recursive: true });
+              logPluginEvent("plugin.image.layer1.dir_ready", { sessionId, imageDir });
+            } catch {}
+
+            const savedPaths: string[] = [];
+            for (let i = 0; i < result.images.length; i++) {
+              const img = result.images[i];
+              const ext = img.mimeType.split("/")[1] || "png";
+              const filePath = join(imageDir, `image-${i}.${ext}`);
+              try {
+                writeFileSync(filePath, Buffer.from(img.data, "base64"));
+                savedPaths.push(filePath);
+                logPluginEvent("plugin.image.layer1.saved", {
+                  sessionId,
+                  imageIndex: i,
+                  mimeType: img.mimeType,
+                  filePath,
+                });
+              } catch (err) {
+                logPluginEvent("plugin.image.layer1.save_failed", {
+                  sessionId,
+                  imageIndex: i,
+                  mimeType: img.mimeType,
+                  filePath,
+                  error: err instanceof Error ? err.message : String(err),
+                });
+              }
+            }
+
+            logPluginEvent("plugin.image.layer1.complete", {
+              sessionId,
+              imageCount: result.images.length,
+              savedCount: savedPaths.length,
+            });
+
+            // Layer 2 (experimental): Cache images for the transform hook to inject as FileParts.
+            // Use a unique ref so the transform hook can correlate images with this specific tool result.
+            const imageRef = crypto.randomUUID();
+            pendingImages.set(imageRef, { sessionId, images: result.images });
+            logPluginEvent("plugin.image.layer2.cached", {
+              sessionId,
+              imageRef,
+              imageCount: result.images.length,
+              pendingCount: pendingImages.size,
+            });
+            context.metadata({ metadata: { imageRef } });
+            logPluginEvent("plugin.image.layer2.metadata_attached", {
+              sessionId,
+              imageRef,
+            });
+
+            if (savedPaths.length > 0) {
+              logPluginEvent("plugin.feedback.returning_with_images", {
+                sessionId,
+                imageRef,
+                savedCount: savedPaths.length,
+              });
+              return `${result.content}\n\n[User attached ${savedPaths.length} image(s): ${savedPaths.join(", ")}]`;
+            }
+
+            logPluginEvent("plugin.feedback.returning_without_saved_paths", {
+              sessionId,
+              imageRef,
+              imageCount: result.images.length,
+            });
+          }
+
+          logPluginEvent("plugin.feedback.returning_text_only", { sessionId });
+          return result.content;
         }
-
-        return result.content;
       } catch (err: unknown) {
         if (err instanceof DOMException && err.name === "AbortError") {
+          logPluginEvent("plugin.feedback.wait.aborted", { sessionId });
           return "[get_feedback aborted — tool was cancelled]";
         }
         const errMsg = err instanceof Error ? err.message : String(err);
-        console.error(`[tasksync] get_feedback error for session ${sessionId}: ${errMsg}`);
+        logPluginEvent("plugin.feedback.wait.failed", { sessionId, error: errMsg });
         return `[TaskSync connection error: ${errMsg}. Is the TaskSync server running at ${serverUrl}?]`;
       }
     },
@@ -112,10 +253,29 @@ const plugin: Plugin = async ({ directory }) => {
     ) => {
       if (!output?.messages?.length) return;
 
+      logPluginEvent("plugin.image.layer2.transform.start", {
+        messageCount: output.messages.length,
+        pendingCount: pendingImages.size,
+      });
+
       for (const msg of output.messages) {
         if (!msg?.parts) continue;
 
+        logPluginEvent("plugin.image.layer2.transform.message", {
+          sessionId: msg.info?.sessionID,
+          messageId: msg.info?.id,
+          partCount: msg.parts.length,
+        });
+
         for (const part of msg.parts) {
+          if (part?.type === "tool") {
+            logPluginEvent("plugin.image.layer2.transform.tool_part", {
+              sessionId: msg.info?.sessionID,
+              messageId: msg.info?.id,
+              ...summarizePart(part),
+            });
+          }
+
           if (
             part.type !== "tool" ||
             part.tool !== "get_feedback" ||
@@ -124,14 +284,34 @@ const plugin: Plugin = async ({ directory }) => {
             continue;
           }
 
-          const imageRef = part.state?.metadata?.imageRef;
-          if (!imageRef) continue;
+          const imageRef = part.state?.metadata?.imageRef ?? part?.metadata?.imageRef;
+          if (!imageRef) {
+            logPluginEvent("plugin.image.layer2.no_image_ref", {
+              sessionId: msg.info?.sessionID,
+              messageId: msg.info?.id,
+              ...summarizePart(part),
+            });
+            continue;
+          }
 
-          const images = pendingImages.get(imageRef);
-          if (!images || images.length === 0) continue;
+          const batch = pendingImages.get(imageRef);
+          if (!batch || batch.images.length === 0) {
+            const existingAttachmentCount = Array.isArray(part.state?.attachments)
+              ? part.state.attachments.length
+              : 0;
+            if (existingAttachmentCount === 0) {
+              logPluginEvent("plugin.image.layer2.cache_miss", {
+                sessionId: msg.info?.sessionID,
+                messageId: msg.info?.id,
+                imageRef,
+                pendingCount: pendingImages.size,
+              });
+            }
+            continue;
+          }
 
           // Inject images as attachments on the tool state
-          part.state.attachments = images.map(
+          part.state.attachments = batch.images.map(
             (img: ImageAttachment, idx: number) => ({
               type: "file" as const,
               mime: img.mimeType,
@@ -140,22 +320,46 @@ const plugin: Plugin = async ({ directory }) => {
             }),
           );
 
+          logPluginEvent("plugin.image.layer2.injected", {
+            sessionId: batch.sessionId,
+            messageId: msg.info?.id,
+            imageRef,
+            attachmentCount: batch.images.length,
+          });
+
           // Free memory — this ref has been processed
           pendingImages.delete(imageRef);
+          logPluginEvent("plugin.image.layer2.cleaned", {
+            sessionId: batch.sessionId,
+            imageRef,
+            pendingCount: pendingImages.size,
+          });
         }
       }
+
+      logPluginEvent("plugin.image.layer2.transform.done", {
+        pendingCount: pendingImages.size,
+      });
     },
 
     event: async ({ event }) => {
       if (event.type === "session.deleted") {
         const sessionInfo = (event as { properties?: { info?: { id?: string } } }).properties?.info;
         if (sessionInfo?.id) {
+          logPluginEvent("plugin.session.deleted", {
+            sessionId: sessionInfo.id,
+            pendingCount: pendingImages.size,
+          });
           fetch(`${serverUrl}/sessions/${sessionInfo.id}`, { method: "DELETE" }).catch(() => {});
 
           // Clean up any cached images for this session
           for (const [ref, _images] of pendingImages) {
             pendingImages.delete(ref);
           }
+          logPluginEvent("plugin.session.deleted.cleanup_complete", {
+            sessionId: sessionInfo.id,
+            pendingCount: pendingImages.size,
+          });
         }
       }
     },

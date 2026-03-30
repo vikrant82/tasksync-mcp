@@ -1,10 +1,15 @@
-Updated: 2026-03-28
+Updated: 2026-03-29
 
-## Next Up: Plugin Image Support
-- Plugin `get_feedback` returns text only (OpenCode tool limitation: `execute()` returns `Promise<string>`)
-- MCP path already supports full `ImageContent` blocks
-- Need to explore: can images be injected via `client.session.prompt()` SDK, or base64-encoded in text?
-- Related memory: `knowledge__mcp_image_support`
+## Completed: Plugin Image Support + Session Prune Fix (March 2026)
+- `opencode-tasksync@1.1.0`: best-effort image support for `get_feedback`
+- Layer 1: save images to `$TMPDIR/tasksync-images/<sessionId>/image-N.<ext>` and return file paths in tool output
+- Layer 2: experimental `experimental.chat.messages.transform` hook injects `FilePart` attachments via `data:` URIs
+- Memory leak fixed by deleting processed image refs from `pendingImages`
+- `tasksync-mcp-http@1.0.1`: plugin sessions are no longer auto-pruned during long gaps between feedback calls
+- Root cause: `pruneStale()` only protected sessions with active `pendingWaiter`; plugin sessions lost protection after feedback delivery and could be pruned before next `get_feedback`
+- Fix: protect sessions with no MCP transport (`!entry.transport`) from auto-prune; cleanup remains via plugin `session.deleted`, manual prune, or UI delete
+- Docs updated: `README.md`, `docs/OPENCODE_PLUGIN.md`, `opencode-plugin/README.md`
+- GitHub releases created: `v1.0.1` and `plugin-v1.1.0`
 
 ## Completed: OpenCode Plugin v1.0.0 (March 2026)
 - Published to npm as `opencode-tasksync@1.0.0`
@@ -16,11 +21,4 @@ Updated: 2026-03-28
 - Previous monorepo approach parked on `opencode-plugin` branch
 
 ## Completed: Simple Prune Integration (March 2026)
-- SessionManager extraction from index.ts
-- Bug fixes for double-message/redundant broadcasts
-- Auto-prune + manual prune with UI support
-
-## Completed: Image Support & UI Enhancements (March 2026)
-- Full image pipeline (paste/drag/file → base64 → MCP ImageContent)
-- Markdown toolbar, accessibility, two-column layout
-- Session management UI (rename, prune, delete)
+- Session auto-prune UI and backend integration landed earlier on main
