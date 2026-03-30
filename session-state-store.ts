@@ -109,6 +109,7 @@ export class SessionStateStore {
                   })
                   .filter((entry) => entry.content.length > 0 || (entry.images && entry.images.length > 0))
               : [],
+            remoteEnabled: persisted.remoteEnabled === true,
           },
         ];
       })

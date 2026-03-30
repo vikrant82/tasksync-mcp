@@ -896,6 +896,28 @@ function startFeedbackUI() {
     });
   });
 
+  feedbackApp.post("/api/status/:sessionId", async (req, res) => {
+    const sessionId = req.params.sessionId;
+    if (!sessionId || !hasSession(sessionId)) {
+      res.status(404).json({ error: "Session not found" });
+      return;
+    }
+    if (!sessionManager.isRemoteEnabled(sessionId)) {
+      res.status(200).json({ ok: true, skipped: true, reason: "remote_not_enabled" });
+      return;
+    }
+    const context = typeof req.body?.context === "string" ? req.body.context : "";
+    if (!context) {
+      res.status(400).json({ error: "Missing context" });
+      return;
+    }
+    const feedbackUrl = `http://localhost:${uiPort}`;
+    logEvent("info", "api.status.fyi", { sessionId, contextLength: context.length });
+
+    await channelManager.sendFYI({ sessionId, context, feedbackUrl });
+    res.json({ ok: true, sessionId });
+  });
+
   feedbackApp.post("/feedback", async (req, res) => {
     try {
       const content = typeof req.body === "string" ? req.body : req.body.content ?? "";

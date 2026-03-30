@@ -132,7 +132,7 @@ export class SessionManager {
         queuedAt: persisted.queuedAt,
         latestFeedback: persisted.latestFeedback,
         history: Array.isArray(persisted.history) ? persisted.history : [],
-        remoteEnabled: (persisted as Record<string, unknown>).remoteEnabled === true,
+        remoteEnabled: persisted.remoteEnabled === true,
         agentContext: null,
       });
     }
@@ -141,6 +141,9 @@ export class SessionManager {
       sessionCount: Object.keys(snapshot.sessionMetadataById).length,
       feedbackStateCount: this.feedbackState.size,
       activeUiSessionId: this.activeUiSessionId,
+      remoteEnabledSessions: Array.from(this.feedbackState.entries())
+        .filter(([, s]) => s.remoteEnabled)
+        .map(([id]) => id),
     });
   }
 
@@ -324,7 +327,9 @@ export class SessionManager {
   setRemoteEnabled(sessionId: string, enabled: boolean): void {
     const state = this.getFeedbackState(sessionId);
     state.remoteEnabled = enabled;
-    this.persistFeedbackState(sessionId);
+    this.persistFeedbackState(sessionId).catch((err) => {
+      this.log("error", "session.remote.persist_failed", { sessionId, error: String(err) });
+    });
     this.events.onStateChange(sessionId);
     this.log("info", "session.remote.toggled", { sessionId, enabled });
   }

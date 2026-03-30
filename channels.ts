@@ -21,10 +21,17 @@ export interface FeedbackCallback {
   (sessionId: string, content: string, images?: ImageAttachment[]): void;
 }
 
+export interface FYIParams {
+  sessionId: string;
+  context: string;
+  feedbackUrl: string;
+}
+
 export interface NotificationChannel {
   readonly name: string;
   initialize(): Promise<void>;
   notify(params: NotificationParams): Promise<void>;
+  sendFYI(params: FYIParams): Promise<void>;
   onFeedback(callback: FeedbackCallback): void;
   shutdown(): Promise<void>;
 }
@@ -270,6 +277,39 @@ export class TelegramChannel implements NotificationChannel {
     }
   }
 
+
+  async sendFYI(params: FYIParams): Promise<void> {
+    if (this.registeredChatIds.size === 0) {
+      this.log("warn", "telegram.fyi.no_recipients", {
+        sessionId: params.sessionId,
+      });
+      return;
+    }
+
+    const messageParts = this.formatFYIParts(params);
+
+    for (const chatId of this.registeredChatIds) {
+      try {
+        for (const part of messageParts) {
+          await this.bot.api.sendMessage(chatId, part, {
+            parse_mode: "HTML",
+          });
+        }
+        this.log("info", "telegram.fyi.sent", {
+          chatId,
+          sessionId: params.sessionId,
+          parts: messageParts.length,
+        });
+      } catch (err) {
+        this.log("error", "telegram.fyi.error", {
+          chatId,
+          sessionId: params.sessionId,
+          error: String(err),
+        });
+      }
+    }
+  }
+
   onFeedback(callback: FeedbackCallback): void {
     this.feedbackCallbacks.push(callback);
   }
@@ -350,6 +390,57 @@ export class TelegramChannel implements NotificationChannel {
     }
 
     // Append footer to last chunk if it fits, otherwise make a new part
+    if (current.length + footer.length <= TELEGRAM_MAX) {
+      parts.push(current + footer);
+    } else {
+      parts.push(current);
+      parts.push(footer);
+    }
+
+    return parts;
+  }
+
+
+  private formatFYIParts(params: FYIParams): string[] {
+    const TELEGRAM_MAX = 4000;
+    const header = `📋 <b>Agent Status Update</b>\n<i>Session: ${this.escapeHtml(params.sessionId.slice(0, 20))}…</i>\n\n`;
+    const footer = `\n\n<i>ℹ️ No response needed — this is an informational update.</i>\n<a href="${params.feedbackUrl}">Open in browser</a>`;
+    const contextHtml = this.markdownToTelegramHtml(params.context);
+
+    const singleMessage = header + contextHtml + footer;
+    if (singleMessage.length <= TELEGRAM_MAX) {
+      return [singleMessage];
+    }
+
+    // Split at paragraph boundaries, same logic as formatNotificationParts
+    const paragraphs = contextHtml.split("\n\n");
+    const parts: string[] = [];
+    let current = header;
+
+    for (const para of paragraphs) {
+      const addition = (current.length > header.length ? "\n\n" : "") + para;
+      if (current.length + addition.length > TELEGRAM_MAX && current.length > header.length) {
+        parts.push(current);
+        current = para;
+      } else {
+        current += addition;
+      }
+    }
+
+    if (current.length > TELEGRAM_MAX) {
+      const lines = current.split("\n");
+      let chunk = "";
+      for (const line of lines) {
+        if (chunk.length + line.length + 1 > TELEGRAM_MAX && chunk.length > 0) {
+          parts.push(chunk);
+          chunk = line;
+        } else {
+          chunk += (chunk ? "\n" : "") + line;
+        }
+      }
+      current = chunk;
+    }
+
     if (current.length + footer.length <= TELEGRAM_MAX) {
       parts.push(current + footer);
     } else {
@@ -472,6 +563,28 @@ export class ChannelManager {
     const promises = [...this.channels.values()].map((ch) =>
       ch.notify(params).catch((err) => {
         this.log("error", "channels.notify.error", {
+          channel: ch.name,
+          sessionId: params.sessionId,
+          error: String(err),
+        });
+      })
+    );
+    await Promise.all(promises);
+  }
+
+
+  async sendFYI(params: FYIParams): Promise<void> {
+    if (this.channels.size === 0) return;
+
+    this.log("info", "channels.fyi", {
+      sessionId: params.sessionId,
+      channelCount: this.channels.size,
+      contextLength: params.context.length,
+    });
+
+    const promises = [...this.channels.values()].map((ch) =>
+      ch.sendFYI(params).catch((err) => {
+        this.log("error", "channels.fyi.error", {
           channel: ch.name,
           sessionId: params.sessionId,
           error: String(err),
