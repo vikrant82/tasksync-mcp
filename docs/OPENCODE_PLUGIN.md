@@ -138,26 +138,35 @@ The `"full"` style is recommended for models that need explicit instructions. Us
 ## How It Works
 
 ```
-OpenCode Agent  ──get_feedback──►  Plugin  ──POST /api/wait/:sessionId──►  TaskSync Server
+OpenCode Agent  ──get_feedback──►  Plugin  ──GET /api/stream/:sessionId──►  TaskSync Server
                                                                                   │
-                                                                           Blocks until
-                                                                           feedback submitted
+                                                                           SSE stream with
+                                                                           30s keepalives
                                                                                   │
-OpenCode Agent  ◄──feedback text──  Plugin  ◄──JSON response────────────  TaskSync Server
+OpenCode Agent  ◄──feedback text──  Plugin  ◄──event: feedback───────────  TaskSync Server
 ```
 
 1. Agent calls `get_feedback` (native OpenCode tool, no MCP prefix)
-2. Plugin sends `POST /api/wait/:sessionId` to the TaskSync server
-3. Request blocks until you submit feedback in the web UI
-4. Plugin returns your feedback text to the agent
-5. Agent processes feedback and calls `get_feedback` again
+2. Plugin opens an SSE stream to `GET /api/stream/:sessionId`
+3. Server sends keepalive comments every 30 seconds to prevent idle timeouts
+4. When you submit feedback in the web UI, the server sends it as an SSE `feedback` event
+5. Plugin returns your feedback text to the agent
+6. Agent processes feedback and calls `get_feedback` again
 
 Sessions are auto-registered on first `get_feedback` call. Cleanup happens on `session.deleted` events.
+
+### Session Resiliency
+
+The plugin is designed to maintain the agent's feedback loop through transient failures:
+
+- **SSE keepalives** — 30-second heartbeats prevent HTTP client idle timeouts (Bun, Node, etc.)
+- **Auto-reconnect** — If the SSE stream drops (server restart, network glitch), the plugin reconnects silently with exponential backoff (1s → 2s → 4s → 8s → 15s cap). The agent never sees the interruption.
+- **Graceful shutdown** — When the server shuts down, it sends a `closed` event to all active SSE clients, giving the plugin a clean signal to reconnect.
+- **Abort-aware** — Only user-initiated cancellation (`context.abort` from OpenCode) terminates the wait. All other errors are retried internally.
 
 ## Limitations
 
 - **Image support is best-effort**: When users attach images, the plugin saves them to temp files and includes file paths in the response text (agents can read these with file tools). An experimental hook also attempts to inject images as native content, but this depends on OpenCode's internal handling of `FilePart` attachments. The MCP integration provides full native `ImageContent` blocks.
-- **Server must be running**: The plugin connects to an external server. If the server is down, `get_feedback` calls will fail.
 - **One server instance**: Multiple OpenCode instances share the same TaskSync server and feedback UI.
 
 ## Troubleshooting

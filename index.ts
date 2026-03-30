@@ -51,6 +51,9 @@ const MIN_DISCONNECT_AFTER_MINUTES = 1;
 const MAX_DISCONNECT_AFTER_MINUTES = 24 * 60; // 1 day
 const DEBUG_BODY_MAX_CHARS = 2000; // truncate debug-logged bodies to this length
 
+// Registry of active SSE plugin connections — used for graceful shutdown notification
+const activeSSEClients = new Map<string, import("express").Response>();
+
 // NOTE: FeedbackChannelState, StreamableSessionEntry, PendingFeedbackResult
 // are now imported from session-manager.ts
 
@@ -931,7 +934,8 @@ function startFeedbackUI() {
     }
   });
 
-  feedbackApp.post("/api/wait/:sessionId", async (req, res) => {
+  // SSE stream endpoint for plugin wait — keepalives prevent client timeout
+  feedbackApp.get("/api/stream/:sessionId", async (req, res) => {
     const sessionId = req.params.sessionId?.trim();
     if (!sessionId) {
       res.status(400).json({ error: "sessionId is required" });
@@ -942,18 +946,24 @@ function startFeedbackUI() {
     if (!hasSession(sessionId)) {
       const transportId = `plugin-${sessionId}`;
       sessionManager.createSession(sessionId, undefined, undefined, transportId, sessionId, null);
-      logEvent("info", "api.wait.auto_registered", { sessionId });
+      logEvent("info", "api.stream.auto_registered", { sessionId });
     }
 
-    // Check queued feedback first — return immediately if found
+    // Check queued feedback first — return immediately as SSE event
     const queued = sessionManager.consumeQueuedFeedback(sessionId);
     if (queued) {
-      logEvent("info", "api.wait.queued", { sessionId, contentLength: queued.content.length });
-      res.json({ type: "feedback", content: queued.content, images: queued.images || null });
+      logEvent("info", "api.stream.queued", { sessionId, contentLength: queued.content.length });
+      res.writeHead(200, {
+        "Content-Type": "text/event-stream",
+        "Cache-Control": "no-cache",
+        Connection: "keep-alive",
+      });
+      res.write(`event: feedback\ndata: ${JSON.stringify({ type: "feedback", content: queued.content, images: queued.images || null })}\n\n`);
+      res.end();
       return;
     }
 
-    // Set up long-poll waiter
+    // Set up waiter
     const waitId = crypto.randomUUID();
     const { promise, resolve } = Promise.withResolvers<PendingFeedbackResult>();
 
@@ -964,34 +974,59 @@ function startFeedbackUI() {
       resolve,
     });
 
-    logEvent("info", "api.wait.started", { sessionId, waitId });
+    logEvent("info", "api.stream.started", { sessionId, waitId });
 
-    // Clean up if client disconnects (plugin abort signal cancels fetch).
-    // IMPORTANT: Listen on `res`, not `req`. The request stream is already consumed
-    // by Express's body parser, so req's 'close' fires immediately. The response's
-    // 'close' fires when the TCP connection drops (client disconnect/abort).
+    // SSE headers
+    res.writeHead(200, {
+      "Content-Type": "text/event-stream",
+      "Cache-Control": "no-cache",
+      Connection: "keep-alive",
+    });
+
+    // Track this SSE connection for graceful shutdown notification
+    activeSSEClients.set(waitId, res);
+
+    // Keepalive to prevent client timeout (Bun default ~4.5min)
+    const keepaliveTimer = setInterval(() => {
+      res.write(": keepalive\n\n");
+    }, KEEPALIVE_INTERVAL_MS);
+
+    const cleanupSSE = () => {
+      clearInterval(keepaliveTimer);
+      activeSSEClients.delete(waitId);
+    };
+
+    // Clean up on client disconnect (plugin abort signal cancels fetch)
     let resolved = false;
     res.on("close", () => {
+      cleanupSSE();
       if (!resolved) {
         sessionManager.clearPendingWaiter(sessionId, "client_disconnected", waitId);
-        logEvent("info", "api.wait.client_disconnected", { sessionId, waitId });
+        logEvent("info", "api.stream.client_disconnected", { sessionId, waitId });
       }
     });
 
     try {
       const result = await promise;
       resolved = true;
-      logEvent("info", "api.wait.resolved", {
+      cleanupSSE();
+
+      const eventType = result.type === "feedback" ? "feedback" : "closed";
+      logEvent("info", "api.stream.resolved", {
         sessionId,
         waitId,
         type: result.type,
         contentLength: result.type === "feedback" ? result.content.length : 0,
       });
-      res.json(result);
+
+      res.write(`event: ${eventType}\ndata: ${JSON.stringify(result)}\n\n`);
+      res.end();
     } catch (err) {
       resolved = true;
-      logEvent("error", "api.wait.error", { sessionId, waitId, error: String(err) });
-      res.status(500).json({ error: String(err) });
+      cleanupSSE();
+      logEvent("error", "api.stream.error", { sessionId, waitId, error: String(err) });
+      res.write(`event: error\ndata: ${JSON.stringify({ type: "error", message: String(err) })}\n\n`);
+      res.end();
     }
   });
 
@@ -1246,8 +1281,19 @@ function cleanup() {
   if (cleanedUp) return;
   cleanedUp = true;
 
-  logEvent("info", "server.cleanup.start", { activeSessions: getAllSessions().size });
+  logEvent("info", "server.cleanup.start", { activeSessions: getAllSessions().size, activeSSEClients: activeSSEClients.size });
   console.error("\nShutting down server...");
+
+  // Notify all active SSE plugin clients so they can reconnect gracefully
+  for (const [waitId, res] of activeSSEClients) {
+    try {
+      res.write(`event: closed\ndata: ${JSON.stringify({ type: "closed", reason: "server_shutdown" })}\n\n`);
+      res.end();
+    } catch {
+      // best-effort — client may already be gone
+    }
+    activeSSEClients.delete(waitId);
+  }
   
   // Shutdown SessionManager (clears auto-prune interval)
   sessionManager.shutdown();

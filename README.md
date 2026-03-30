@@ -19,17 +19,11 @@ npx tasksync-mcp-http --port=3011 --ui-port=3456
 | **Setup** | Drop-in plugin, zero config | Configure MCP endpoint in your client |
 | **Agent behavior** | Injects feedback loop into your existing agents | Manual — paste daemon prompt yourself |
 | **Feedback tool** | `get_feedback` (native tool) | `tasksync_get_feedback` (MCP-prefixed) |
-| **Image support** | Text only (OpenCode limitation) | Full MCP `ImageContent` blocks |
+| **Image support** | Temp files + experimental native injection | Full MCP `ImageContent` blocks |
 
 ### Why OpenCode users should prefer the plugin
 
-With **MCP**, you get a `tasksync_get_feedback` tool — but your agents don't know to use it unless you manually paste a daemon prompt into each one. Every agent you want in the feedback loop needs prompt surgery.
-
-With the **plugin**, feedback loop behavior is injected automatically:
-
-- **Dedicated `daemon` agent** — created for you with the full daemon loop prompt. Switch to it and it just works.
-- **Agent augmentation** — your existing agents (`ask`, `build`, `plan`, or `*` for all) gain feedback loop awareness via `augmentAgents` config. No prompt editing. The coder you already use starts calling `get_feedback` between tasks.
-- **Native lifecycle** — the plugin responds to OpenCode session events, handles cleanup, and integrates with the config system idiomatically.
+The plugin injects feedback loop behavior automatically — a dedicated `daemon` agent, optional augmentation of your existing agents, and resilient SSE-based connections that survive server restarts without agent involvement. See the **[OpenCode Plugin Guide](docs/OPENCODE_PLUGIN.md)** for full details.
 
 MCP is the universal fallback for non-OpenCode clients (VS Code Copilot, Claude Desktop, etc.).
 

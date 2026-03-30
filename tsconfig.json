@@ -19,6 +19,7 @@
     "dist",
     "packages",
     "opencode-plugin",
+    "opencode",
     "__tests__",
     "lib.ts"
   ]

@@ -37,6 +37,13 @@ Two-layer approach since plugin `tool.execute()` returns `Promise<string>` only:
 - Whether Go backend maps these to native LLM image content is **untested** (Go plugin code not public)
 - Pattern validated against community plugins: `opencode-vibeguard` (text redaction) and `opencode-dynamic-context-pruning` (message pruning) both use this hook successfully for message mutation
 
+**Layer 2 Status (as of 2026-03-30):**
+- Transform hook runs and sees completed `get_feedback` tool parts
+- BUT tool parts only show `metadataKeys: ["truncated"]`, NOT our `imageRef`
+- `context.metadata({ metadata: { imageRef } })` is called but not surfacing where transform expects
+- `read` tool parts had `attachmentCount: 1`, proving attachments ARE possible on tool parts
+- Layer 2 remains broken — further investigation needed
+
 **Key Constraints Discovered:**
 - Plugin `tool.execute()` → `Promise<string>` only (no structured content)
 - Go `ToolResult.Content` is string-only; providers send string to LLM APIs

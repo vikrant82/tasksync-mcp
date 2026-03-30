@@ -24,8 +24,8 @@ Runtime centered in `index.ts` with two Express apps:
 ## Transport & Keepalive
 - MCP transport: `StreamableHTTPServerTransport` with transient in-memory replay
 - `requestContext` AsyncLocalStorage carries `{ requestId, res?: express.Response }` per MCP request
-- SSE keepalive: writes `: keepalive\n\n` every 30s to POST response stream (MCP only)
-- Plugin uses long-poll (`POST /api/wait/:sessionId`) — no keepalive needed (localhost)
+- MCP SSE keepalive: writes `: keepalive\n\n` every 30s to POST response stream
+- Plugin SSE: `GET /api/stream/:sessionId` with 30s keepalive comments, replaces old POST long-poll
 
 ## Session & State Management
 - `session-manager.ts`: `SessionManager` class — sessions, feedback state, aliases, auto-prune
@@ -42,11 +42,15 @@ Runtime centered in `index.ts` with two Express apps:
 
 ## Plugin REST API (on UI server port)
 - `POST /api/sessions` — register external session (idempotent)
-- `POST /api/wait/:sessionId` — long-poll for feedback (auto-registers, checks queue first, blocks)
-- Client abort → `res.on('close')` → `clearPendingWaiter()` cleanup (must use `res`, not `req` — Express body parser consumes `req` stream before handler runs)
+- `GET /api/stream/:sessionId` — SSE stream for feedback (auto-registers, checks queue first, sends keepalives every 30s). Replaces old POST long-poll.
+- Client disconnect → `res.on('close')` → `clearPendingWaiter()` + cleanup SSE registry
+- `activeSSEClients` Map tracks all open SSE connections for graceful shutdown
 
 ## OpenCode Plugin (`opencode-plugin/` directory)
-- Thin HTTP client — `fetch()` to server REST endpoints
+- SSE client — consumes `GET /api/stream/:sessionId` with auto-reconnect
+- `connectAndWait()`: single SSE connection attempt, returns discriminated union `{ retry: true/false }`
+- Retry loop in `execute()`: exponential backoff (1s → 2s → 4s → 8s → 15s cap), only `context.abort` terminates
+- `NON_RETRYABLE_REASONS`: `session_deleted`, `session_pruned` — permanent closes that stop retry
 - Config hook: always injects `daemon` agent + optional augmentation of other agents
 - Event hook: cleans up on `session.deleted`
 - Config from `.tasksync/config.json` (global `~/.tasksync/` → project `.tasksync/` → env vars)
