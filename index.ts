@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 
+import "dotenv/config";
+
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { AsyncLocalStorage } from "node:async_hooks";
@@ -25,6 +27,7 @@ import {
   type PendingFeedbackResult,
   type PendingWaiter,
 } from "./session-manager.js";
+import { ChannelManager, type ChannelManagerConfig } from "./channels.js";
 
 const DEFAULT_TIMEOUT = 3_600_000; // safety-net timeout (1 hour); SSE keepalive prevents idle disconnects, this is the absolute max wait
 
@@ -41,6 +44,15 @@ const feedbackTimeout = heartbeat
   : 0; // heartbeat=false → no timeout, wait indefinitely (keepalive keeps connection alive)
 const logLevel = (process.env.TASKSYNC_LOG_LEVEL || "info").toLowerCase();
 const logFilePath = process.env.TASKSYNC_LOG_FILE?.trim() || "";
+
+// Channel config — Telegram bot token from env or CLI
+const telegramBotToken = process.env.TASKSYNC_TELEGRAM_BOT_TOKEN?.trim()
+  || args.find((arg) => arg.startsWith("--telegram-token="))?.split("=")[1]?.trim()
+  || "";
+const telegramAllowedChatIds = (process.env.TASKSYNC_TELEGRAM_CHAT_IDS || "")
+  .split(",")
+  .map((s) => parseInt(s.trim(), 10))
+  .filter((n) => !Number.isNaN(n));
 
 const DEFAULT_FEEDBACK_SESSION = "__default__";
 const STREAM_RETRY_INTERVAL_MS = 2000;
@@ -65,6 +77,9 @@ const uiEventClients = new Set<UiEventClient>();
 
 // Session Manager - single source of truth for session state
 let sessionManager: SessionManager;
+
+// Channel Manager - notification channels (Telegram, etc.)
+let channelManager: ChannelManager = new ChannelManager(logEvent);
 
 // ==========================================================================
 // FACADE ACCESSORS - For gradual migration from inline maps to SessionManager
@@ -295,6 +310,7 @@ function buildUiStatePayload(targetSessionId?: string) {
       waitingForFeedback: Boolean(state.pendingWaiter),
       waitStartedAt: state.pendingWaiter?.startedAt || null,
       hasQueuedFeedback: Boolean(state.queuedFeedback),
+      remoteEnabled: state.remoteEnabled,
     };
   });
   const state = sessionManager.getFeedbackState(normalizedSessionId);
@@ -304,6 +320,7 @@ function buildUiStatePayload(targetSessionId?: string) {
     latestFeedback: state?.latestFeedback || "",
     history: state?.history || [],
     sessions,
+    channelsAvailable: channelManager?.hasChannels ?? false,
   };
 }
 
@@ -575,6 +592,18 @@ function registerServerHandlers(targetServer: Server) {
             heartbeat,
             timeoutMs: feedbackTimeout,
           });
+
+          // Trigger remote notification for MCP sessions
+          if (sessionManager.isRemoteEnabled(sessionId) && channelManager?.hasChannels) {
+            const context = sessionManager.getAgentContext(sessionId);
+            channelManager.notify({
+              sessionId,
+              context: context ?? undefined,
+              feedbackUrl: `http://localhost:${uiPort}/session/${encodeURIComponent(sessionId)}`,
+            }).catch((err) => {
+              logEvent("error", "feedback.notify.error", { sessionId, error: String(err) });
+            });
+          }
 
           // --- SSE keepalive: write SSE comments to prevent HTTP connection timeout ---
           const httpRes = requestContext.getStore()?.res;
@@ -848,6 +877,47 @@ function startFeedbackUI() {
     res.json({ ok: true, disconnectAfterMinutes: sessionManager.getDisconnectAfterMinutes() });
   });
 
+  // Remote mode endpoints
+  feedbackApp.post("/sessions/:sessionId/remote", async (req, res) => {
+    const sessionId = req.params.sessionId;
+    if (!sessionId || !hasSession(sessionId)) {
+      res.status(404).json({ error: "Session not found" });
+      return;
+    }
+    const enabled = req.body?.enabled === true;
+    sessionManager.setRemoteEnabled(sessionId, enabled);
+    res.json({ ok: true, sessionId, remoteEnabled: enabled });
+  });
+
+  feedbackApp.get("/channels", (_req, res) => {
+    res.json({
+      available: channelManager.hasChannels,
+      channels: channelManager.hasChannels ? ["telegram"] : [],
+    });
+  });
+
+  feedbackApp.post("/api/status/:sessionId", async (req, res) => {
+    const sessionId = req.params.sessionId;
+    if (!sessionId || !hasSession(sessionId)) {
+      res.status(404).json({ error: "Session not found" });
+      return;
+    }
+    if (!sessionManager.isRemoteEnabled(sessionId)) {
+      res.status(200).json({ ok: true, skipped: true, reason: "remote_not_enabled" });
+      return;
+    }
+    const context = typeof req.body?.context === "string" ? req.body.context : "";
+    if (!context) {
+      res.status(400).json({ error: "Missing context" });
+      return;
+    }
+    const feedbackUrl = `http://localhost:${uiPort}`;
+    logEvent("info", "api.status.fyi", { sessionId, contextLength: context.length });
+
+    await channelManager.sendFYI({ sessionId, context, feedbackUrl });
+    res.json({ ok: true, sessionId });
+  });
+
   feedbackApp.post("/feedback", async (req, res) => {
     try {
       const content = typeof req.body === "string" ? req.body : req.body.content ?? "";
@@ -976,6 +1046,29 @@ function startFeedbackUI() {
 
     logEvent("info", "api.stream.started", { sessionId, waitId });
 
+    // Capture agent context from plugin header (base64-encoded to handle newlines in HTTP headers)
+    const rawAgentContext = typeof req.headers["x-agent-context"] === "string"
+      ? req.headers["x-agent-context"]
+      : null;
+    const agentContext = rawAgentContext
+      ? Buffer.from(rawAgentContext, "base64").toString("utf-8")
+      : null;
+    if (agentContext) {
+      sessionManager.setAgentContext(sessionId, agentContext);
+    }
+
+    // Trigger remote notification if remote mode is enabled for this session
+    if (sessionManager.isRemoteEnabled(sessionId) && channelManager?.hasChannels) {
+      const context = agentContext || sessionManager.getAgentContext(sessionId);
+      channelManager.notify({
+        sessionId,
+        context: context ?? undefined,
+        feedbackUrl: `http://localhost:${uiPort}/session/${encodeURIComponent(sessionId)}`,
+      }).catch((err) => {
+        logEvent("error", "api.stream.notify.error", { sessionId, error: String(err) });
+      });
+    }
+
     // SSE headers
     res.writeHead(200, {
       "Content-Type": "text/event-stream",
@@ -1080,6 +1173,23 @@ async function runStreamableHTTPServer() {
     },
   });
   await sessionManager.initialize();
+
+  // Initialize Channel Manager — start Telegram bot if configured
+  const channelConfig: ChannelManagerConfig = {};
+  if (telegramBotToken) {
+    channelConfig.telegram = {
+      botToken: telegramBotToken,
+      allowedChatIds: telegramAllowedChatIds.length > 0 ? telegramAllowedChatIds : undefined,
+    };
+  }
+  await channelManager.initialize(channelConfig);
+
+  // Route feedback from notification channels (e.g. Telegram replies) to sessions
+  channelManager.onFeedback((sessionId, content) => {
+    resolvePendingFeedback(content, sessionId).catch((err) => {
+      logEvent("error", "channels.feedback.delivery_error", { sessionId, error: String(err) });
+    });
+  });
   
   const app = express();
 
@@ -1297,6 +1407,9 @@ function cleanup() {
   
   // Shutdown SessionManager (clears auto-prune interval)
   sessionManager.shutdown();
+
+  // Shutdown notification channels (stops Telegram polling)
+  channelManager.shutdown().catch(() => { /* best-effort */ });
   
   // Close all active sessions
   for (const [sessionId, session] of getAllSessions().entries()) {

@@ -17,6 +17,21 @@ interface ImageAttachment {
  */
 const pendingImages = new Map<string, ImageAttachment[]>();
 
+/**
+ * Module-level cache for the most recent assistant text per session.
+ * Updated reactively via message.part.updated events. Sent to server
+ * as X-Agent-Context header on SSE connections for remote notifications.
+ */
+const agentContextBySession = new Map<string, string>();
+
+/**
+ * FYI notification timers. When assistant text completes without a get_feedback
+ * call within FYI_DELAY_MS, the text is sent to the server as an informational
+ * status update for remote notifications.
+ */
+const fyiTimers = new Map<string, ReturnType<typeof setTimeout>>();
+const FYI_DELAY_MS = 30_000;
+
 // Retry configuration for transient errors
 const INITIAL_BACKOFF_MS = 1000;
 const MAX_BACKOFF_MS = 15000;
@@ -112,12 +127,55 @@ const plugin: Plugin = async ({ directory }) => {
       pendingImages.delete(input.sessionID);
     },
 
+    // Cache assistant text synchronously — this hook fires during text-end processing,
+    // BEFORE tool execution in the same LLM step. Unlike bus events (which are delivered
+    // asynchronously via a forked fiber), this guarantees the cache has the current step's
+    // text when get_feedback executes.
+    //
+    // Also starts a FYI timer: if the agent doesn't call get_feedback within FYI_DELAY_MS,
+    // the text is sent to the server as an informational notification.
+    "experimental.text.complete": async (
+      input: { sessionID: string; messageID: string; partID: string },
+      output: { text: string },
+    ) => {
+      if (output.text && output.text.length > 0) {
+        agentContextBySession.set(input.sessionID, output.text);
+
+        // Cancel any existing FYI timer for this session
+        const existing = fyiTimers.get(input.sessionID);
+        if (existing) clearTimeout(existing);
+
+        // Start new FYI timer — will fire if no get_feedback within FYI_DELAY_MS
+        const timer = setTimeout(() => {
+          fyiTimers.delete(input.sessionID);
+          const text = agentContextBySession.get(input.sessionID);
+          if (!text) return;
+
+          fetch(`${serverUrl}/api/status/${input.sessionID}`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ context: text }),
+          }).catch((err) => {
+            console.error(`[tasksync] FYI notification failed: ${err}`);
+          });
+        }, FYI_DELAY_MS);
+
+        fyiTimers.set(input.sessionID, timer);
+      }
+    },
+
     event: async ({ event }) => {
       if (event.type === "session.deleted") {
         const sessionInfo = (event as { properties?: { info?: { id?: string } } }).properties?.info;
         if (sessionInfo?.id) {
           fetch(`${serverUrl}/sessions/${sessionInfo.id}`, { method: "DELETE" }).catch(() => {});
           pendingImages.delete(sessionInfo.id);
+          agentContextBySession.delete(sessionInfo.id);
+          const fyiTimer = fyiTimers.get(sessionInfo.id);
+          if (fyiTimer) {
+            clearTimeout(fyiTimer);
+            fyiTimers.delete(sessionInfo.id);
+          }
         }
       }
     },
@@ -178,9 +236,22 @@ async function connectAndWait(
   sessionId: string,
   context: { abort: AbortSignal },
 ): Promise<ConnectResult> {
+  // Cancel any pending FYI timer — the agent is now waiting for feedback,
+  // so the text will be used as context in the notification instead.
+  const fyiTimer = fyiTimers.get(sessionId);
+  if (fyiTimer) {
+    clearTimeout(fyiTimer);
+    fyiTimers.delete(sessionId);
+  }
+
   const resp = await fetch(`${serverUrl}/api/stream/${sessionId}`, {
     signal: context.abort,
-    headers: { Accept: "text/event-stream" },
+    headers: {
+      Accept: "text/event-stream",
+      ...(agentContextBySession.has(sessionId) && {
+        "X-Agent-Context": Buffer.from(agentContextBySession.get(sessionId)!).toString("base64"),
+      }),
+    },
   });
 
   if (!resp.ok) {

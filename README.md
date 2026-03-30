@@ -101,6 +101,7 @@ The web UI (`http://localhost:3456`) provides:
 - **Markdown toolbar**: Bold, italic, code, lists, headings with keyboard shortcuts
 - **Live status**: See which sessions are waiting, idle, or have queued feedback
 - **Desktop notifications**: Get alerted when an agent is waiting for you
+- **Remote mode**: Get Telegram notifications when agents wait, reply from anywhere
 - **Session management**: Rename, prune stale, delete sessions
 
 See **[Feedback UI Guide](docs/FEEDBACK_UI_GUIDE.md)** for details.
@@ -114,6 +115,7 @@ See **[Feedback UI Guide](docs/FEEDBACK_UI_GUIDE.md)** for details.
 | `--heartbeat` | off | Enable legacy `[WAITING]` timeout mode |
 | `--timeout=<ms>` | `3600000` | Wait timeout (only with `--heartbeat`) |
 | `--no-ui` | off | Disable embedded feedback UI |
+| `--telegram-token=<tok>` | — | Telegram bot token for remote notifications |
 
 ### Environment Variables
 
@@ -121,6 +123,30 @@ See **[Feedback UI Guide](docs/FEEDBACK_UI_GUIDE.md)** for details.
 |----------|-------------|
 | `TASKSYNC_LOG_LEVEL` | `debug`, `info`, `warn`, `error` (default: `info`) |
 | `TASKSYNC_LOG_FILE` | Path to log file (default: stderr) |
+| `TASKSYNC_TELEGRAM_BOT_TOKEN` | Telegram bot token (alternative to CLI flag) |
+| `TASKSYNC_TELEGRAM_CHAT_IDS` | Pre-authorized Telegram chat IDs (comma-separated) |
+
+A `.env` file in the project root is loaded automatically.
+
+## Remote Mode (Telegram)
+
+Get notified on Telegram when agents are waiting for feedback, and reply directly from your phone.
+
+### Setup
+
+1. Create a Telegram bot via [@BotFather](https://t.me/botfather) and copy the token
+2. Set the token via `.env`, environment variable, or CLI flag:
+   ```bash
+   # .env file
+   TASKSYNC_TELEGRAM_BOT_TOKEN=your-bot-token-here
+   
+   # or CLI
+   npx tasksync-mcp-http --telegram-token=your-bot-token-here
+   ```
+3. Start the server, then send `/start` to your bot in Telegram
+4. Enable remote mode per session via the feedback UI toggle
+
+When an agent calls `get_feedback`, you'll receive a Telegram message with the agent's context and quick-reply buttons. Reply with text or tap a button — the feedback goes straight to the agent.
 
 ## Building from Source
 

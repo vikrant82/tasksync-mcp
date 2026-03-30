@@ -1,6 +1,14 @@
 Updated: 2026-03-30
 
-## Completed: Native Image Injection (March 2026, branch `feat/layer2-image-injection`)
+## Completed: Remote Mode / Telegram Notifications (March 2026, PR #5)
+- Channel abstraction: `NotificationChannel` interface + `ChannelManager` dispatcher
+- Telegram: grammY bot with `/start` registration, chat ID persistence, inline keyboards
+- Plugin captures agent text via `experimental.text.complete` hook, sends as `X-Agent-Context` header
+- Per-session `remoteEnabled` toggle in feedback UI
+- Bug fixes: base64-encode header (newlines), use text.complete instead of event hook (async timing)
+- Config: `TASKSYNC_TELEGRAM_BOT_TOKEN` env / `--telegram-token` CLI, `.env` support via dotenv
+
+## Completed: Native Image Injection (March 2026, PR #4)
 - Root-caused Layer 2 failure: `fromPlugin()` discards callback metadata, `experimental.chat.messages.transform` never saw `imageRef`
 - Switched to `tool.execute.after` hook — injects `FilePart` attachments with PartBase fields directly on tool result
 - First attempt failed: missing id/sessionID/messageID fields → zod validation error. Fixed by generating PartBase-compliant IDs.

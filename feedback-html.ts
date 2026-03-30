@@ -126,12 +126,14 @@ export const FEEDBACK_HTML = `<!DOCTYPE html>
   .flag-noqueue { color: #c9d1d9; border-color: rgba(139,148,158,0.45); background: rgba(139,148,158,0.1); }
   .flag-route { color: #d2b8ff; border-color: rgba(186,140,255,0.45); background: rgba(186,140,255,0.14); }
   .flag-stale { color: #f0883e; border-color: rgba(240,136,62,0.45); background: rgba(240,136,62,0.14); }
+  .flag-remote { color: #79c0ff; border-color: rgba(121,192,255,0.45); background: rgba(121,192,255,0.14); }
   :root[data-theme="light"] .flag-waiting { color: #1a7f37; border-color: rgba(26,127,55,0.4); background: rgba(26,127,55,0.08); }
   :root[data-theme="light"] .flag-idle { color: #0969da; border-color: rgba(9,105,218,0.3); background: rgba(9,105,218,0.06); }
   :root[data-theme="light"] .flag-queue { color: #9a6700; border-color: rgba(154,103,0,0.4); background: rgba(154,103,0,0.08); }
   :root[data-theme="light"] .flag-noqueue { color: #656d76; border-color: rgba(101,109,118,0.4); background: rgba(101,109,118,0.06); }
   :root[data-theme="light"] .flag-route { color: #8250df; border-color: rgba(130,80,223,0.4); background: rgba(130,80,223,0.08); }
   :root[data-theme="light"] .flag-stale { color: #bc4c00; border-color: rgba(188,76,0,0.4); background: rgba(188,76,0,0.08); }
+  :root[data-theme="light"] .flag-remote { color: #0550ae; border-color: rgba(5,80,174,0.4); background: rgba(5,80,174,0.08); }
   .session-alert-badge { display: inline-block; margin-left: 0.4rem; padding: 0.05rem 0.35rem; border-radius: 999px; font-size: 0.68rem; color: #b6f0bf; border: 1px solid rgba(63,185,80,0.45); background: rgba(63,185,80,0.14); }
   :root[data-theme="light"] .session-alert-badge { color: #1a7f37; border-color: rgba(26,127,55,0.4); background: rgba(26,127,55,0.08); }
   .session-buttons { display: flex; flex-wrap: wrap; gap: 0.4rem; margin-top: 0.3rem; }
@@ -469,6 +471,7 @@ ${FEEDBACK_HTML_ENHANCED_STYLES}
   let uiEventSource = null;
   let lastRenderedHistorySignature = '';
   let lastRenderedSessionSignature = '';
+  let channelsAvailable = false;
 
   // ── Session routing ──
   const pathSessionMatch = window.location.pathname.match(/^\\/session\\/([^/]+)$/);
@@ -537,6 +540,7 @@ ${FEEDBACK_HTML_COMPOSER_HISTORY_SCRIPT}
     const staleThreshold = 60 * 60 * 1000;
     const isStale = !s.waitingForFeedback && s.lastActivityAt && (Date.now() - new Date(s.lastActivityAt).getTime()) > staleThreshold;
     const staleFlag = isStale ? '<span class="flag flag-stale" title="No activity for over 1 hour">stale</span>' : '';
+    const remoteFlag = s.remoteEnabled ? '<span class="flag flag-remote" title="Remote notifications enabled">remote</span>' : '';
     const sessionUrl = s.sessionUrl || ('/session/' + encodeURIComponent(s.sessionId));
     const metaCreated = s.createdAt ? formatTimeShort(new Date(s.createdAt)) : '';
     const metaActivity = s.lastActivityAt ? formatElapsed(s.lastActivityAt) + ' ago' : '';
@@ -551,7 +555,7 @@ ${FEEDBACK_HTML_COMPOSER_HISTORY_SCRIPT}
     return '<li class="session-item ' + (isRoute ? 'route-target ' : '') + (isActive ? 'active ' : '') + (isStale ? 'stale ' : '') + (hasAlert ? 'alert' : '') + '">'
       + '<div class="session-name">' + escapeHtml(displayName) + '</div>'
       + (alias ? ('<div class="session-id">' + escapeHtml(s.sessionId) + '</div>') : '')
-      + '<div class="session-flags">' + waitingFlag + queueFlag + routeFlag + staleFlag + (hasAlert ? ' <span class="session-alert-badge">new wait</span>' : '') + '</div>'
+      + '<div class="session-flags">' + waitingFlag + queueFlag + routeFlag + staleFlag + remoteFlag + (hasAlert ? ' <span class="session-alert-badge">new wait</span>' : '') + '</div>'
       + metaLine
       + '<a class="session-link" href="' + sessionUrl + '" target="_blank" rel="noopener">Open in new window</a>'
       + '<div class="session-buttons">'
@@ -560,6 +564,9 @@ ${FEEDBACK_HTML_COMPOSER_HISTORY_SCRIPT}
         ? '<button type="button" class="btn-secondary btn-small" disabled title="Already the active route target">Current</button>'
         : '<button type="button" class="btn-secondary btn-small" data-action="route" data-session-id="' + escapeHtml(s.sessionId) + '">Route Here</button>')
       + '<button type="button" class="btn-secondary btn-small" data-action="set-default" data-session-id="' + escapeHtml(s.sessionId) + '">Set Default</button>'
+      + (channelsAvailable
+        ? '<button type="button" class="btn-secondary btn-small" data-action="toggle-remote" data-session-id="' + escapeHtml(s.sessionId) + '" data-remote-enabled="' + (s.remoteEnabled ? 'true' : 'false') + '">' + (s.remoteEnabled ? 'Disable Remote' : 'Enable Remote') + '</button>'
+        : '')
       + '<button type="button" class="btn-danger btn-small" data-action="disconnect" data-session-id="' + escapeHtml(s.sessionId) + '">Disconnect</button>'
       + '</div>'
       + '</li>';
@@ -706,6 +713,7 @@ ${FEEDBACK_HTML_COMPOSER_HISTORY_SCRIPT}
       const payload = await res.json();
       const sessions = Array.isArray(payload.sessions) ? payload.sessions : [];
       const active = payload.defaultUiSessionId || payload.activeUiSessionId || '(none)';
+      channelsAvailable = !!payload.channelsAvailable;
 
       lastSessionsData = sessions;
       lastActiveId = active;
@@ -718,7 +726,7 @@ ${FEEDBACK_HTML_COMPOSER_HISTORY_SCRIPT}
       detectNotificationTransitions(sessions, targetSessionId);
       updateWaitBanner(targetSessionId, sessions);
 
-      const sessionSignature = JSON.stringify(sessions.map((s) => [s.sessionId, s.alias, s.waitingForFeedback, s.hasQueuedFeedback])) + ':' + selectedSessionId;
+      const sessionSignature = JSON.stringify(sessions.map((s) => [s.sessionId, s.alias, s.waitingForFeedback, s.hasQueuedFeedback, s.remoteEnabled])) + ':' + selectedSessionId + ':' + channelsAvailable;
       if (sessionSignature !== lastRenderedSessionSignature) {
         renderSessionList(sessions, active);
         lastRenderedSessionSignature = sessionSignature;
@@ -778,6 +786,24 @@ ${FEEDBACK_HTML_COMPOSER_HISTORY_SCRIPT}
         updateUrlSession('');
       }
       connectEvents();
+    } catch (err) {
+      showStatus('Error: ' + err.message, 'error');
+    }
+  }
+
+  async function toggleRemoteMode(sessionId, enable) {
+    try {
+      const res = await fetch('/sessions/' + encodeURIComponent(sessionId) + '/remote', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ enabled: enable })
+      });
+      if (!res.ok) {
+        showStatus('Failed to toggle remote mode', 'error');
+        return;
+      }
+      showStatus(enable ? 'Remote notifications enabled' : 'Remote notifications disabled', 'success');
+      loadSessions();
     } catch (err) {
       showStatus('Error: ' + err.message, 'error');
     }
@@ -937,6 +963,11 @@ ${FEEDBACK_HTML_COMPOSER_HISTORY_SCRIPT}
     if (action === 'disconnect') {
       disconnectSession(sessionId);
     }
+
+    if (action === 'toggle-remote') {
+      const currentlyEnabled = button.getAttribute('data-remote-enabled') === 'true';
+      toggleRemoteMode(sessionId, !currentlyEnabled);
+    }
   });
 
   // ── History rendering ──
@@ -993,6 +1024,7 @@ ${FEEDBACK_HTML_COMPOSER_HISTORY_SCRIPT}
     if (!payload || typeof payload !== 'object') return;
     const sessions = Array.isArray(payload.sessions) ? payload.sessions : [];
     const active = payload.activeUiSessionId || '(none)';
+    channelsAvailable = !!payload.channelsAvailable;
 
     lastSessionsData = sessions;
     lastActiveId = active;
@@ -1007,7 +1039,7 @@ ${FEEDBACK_HTML_COMPOSER_HISTORY_SCRIPT}
     detectNotificationTransitions(sessions, targetSessionId);
     updateWaitBanner(targetSessionId, sessions);
 
-    const sessionSignature = JSON.stringify(sessions.map((s) => [s.sessionId, s.alias, s.waitingForFeedback, s.hasQueuedFeedback])) + ':' + selectedSessionId;
+    const sessionSignature = JSON.stringify(sessions.map((s) => [s.sessionId, s.alias, s.waitingForFeedback, s.hasQueuedFeedback, s.remoteEnabled])) + ':' + selectedSessionId + ':' + channelsAvailable;
     if (sessionSignature !== lastRenderedSessionSignature) {
       renderSessionList(sessions, active);
       lastRenderedSessionSignature = sessionSignature;

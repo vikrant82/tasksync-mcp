@@ -12,6 +12,7 @@ With MCP, you get a tool but agents don't know to use it — you'd have to paste
 - Injects a **daemon agent** that maintains a continuous work-feedback loop
 - Optionally augments your existing agents (ask, build, etc.) with the same feedback protocol
 - **Session resiliency** — SSE keepalives prevent idle timeouts, and the plugin silently reconnects through server restarts with exponential backoff. Agents never see transient errors.
+- **Remote mode** — When enabled, the plugin sends the agent's current context to the server, which forwards it as a Telegram notification. Reply from your phone — the agent gets your feedback instantly.
 
 ## Prerequisites
 
