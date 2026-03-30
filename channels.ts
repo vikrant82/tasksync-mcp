@@ -68,6 +68,9 @@ export class TelegramChannel implements NotificationChannel {
   /** Maps chatId to the sessionId they last received a notification for */
   private activeSessionByChat = new Map<number, string>();
 
+  /** Maps Telegram message IDs to sessionIds for reply-to routing */
+  private messageToSession = new Map<number, string>();
+
   constructor(config: TelegramChannelConfig, log: LogFn) {
     this.bot = new Bot(config.botToken);
     this.allowedChatIds =
@@ -177,15 +180,24 @@ export class TelegramChannel implements NotificationChannel {
       await ctx.answerCallbackQuery();
     });
 
-    // Text replies — deliver as feedback to the active session for this chat
+    // Text replies — deliver as feedback. Reply-to routing takes priority, then falls back to last-notified session.
     this.bot.on("message:text", async (ctx) => {
       const chatId = ctx.chat.id;
       if (!this.isAuthorized(chatId)) return;
 
-      const sessionId = this.activeSessionByChat.get(chatId);
+      // Check if user replied to a specific notification message → route to that session
+      const replyToId = ctx.message.reply_to_message?.message_id;
+      let sessionId = replyToId ? this.messageToSession.get(replyToId) : undefined;
+
+      // Fall back to the last-notified session for this chat
+      if (!sessionId) {
+        sessionId = this.activeSessionByChat.get(chatId);
+      }
+
       if (!sessionId) {
         await ctx.reply(
-          "No active session. Wait for an agent notification first."
+          "No active session. Wait for an agent notification first.\n\n" +
+          "💡 Tip: Reply to a specific notification message to target that session."
         );
         return;
       }
@@ -194,11 +206,12 @@ export class TelegramChannel implements NotificationChannel {
       this.log("info", "telegram.reply", {
         chatId,
         sessionId,
+        replyRouted: !!replyToId && !!this.messageToSession.get(replyToId!),
         contentLength: text.length,
       });
 
       this.deliverFeedback(sessionId, text);
-      await ctx.reply("✅ Feedback sent to agent.");
+      await ctx.reply(`✅ Feedback sent to session ${sessionId.slice(0, 12)}…`);
     });
 
     // Auto-register allowed chat IDs so they receive notifications without /start after restart
@@ -231,10 +244,16 @@ export class TelegramChannel implements NotificationChannel {
         this.activeSessionByChat.set(chatId, params.sessionId);
         for (let i = 0; i < messageParts.length; i++) {
           const isLast = i === messageParts.length - 1;
-          await this.bot.api.sendMessage(chatId, messageParts[i], {
+          const sent = await this.bot.api.sendMessage(chatId, messageParts[i], {
             parse_mode: "HTML",
             ...(isLast ? { reply_markup: keyboard } : {}),
           });
+          // Track all notification messages for reply-to routing (cap at 200 entries)
+          this.messageToSession.set(sent.message_id, params.sessionId);
+          if (this.messageToSession.size > 200) {
+            const oldest = this.messageToSession.keys().next().value;
+            if (oldest !== undefined) this.messageToSession.delete(oldest);
+          }
         }
         this.log("info", "telegram.notify.sent", {
           chatId,
