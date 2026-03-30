@@ -43,6 +43,8 @@ export type FeedbackChannelState = {
     images?: ImageAttachment[];
     createdAt: string;
   }[];
+  remoteEnabled: boolean;
+  agentContext: string | null;
 };
 
 export type StreamableSessionEntry = {
@@ -69,6 +71,7 @@ export type SessionInfo = {
   isWaiting: boolean;
   waitStartedAt: string | null;
   hasQueuedFeedback: boolean;
+  remoteEnabled: boolean;
 };
 
 export type SessionManagerEvents = {
@@ -129,6 +132,8 @@ export class SessionManager {
         queuedAt: persisted.queuedAt,
         latestFeedback: persisted.latestFeedback,
         history: Array.isArray(persisted.history) ? persisted.history : [],
+        remoteEnabled: (persisted as Record<string, unknown>).remoteEnabled === true,
+        agentContext: null,
       });
     }
 
@@ -211,6 +216,7 @@ export class SessionManager {
         isWaiting: Boolean(state?.pendingWaiter),
         waitStartedAt: state?.pendingWaiter?.startedAt ?? null,
         hasQueuedFeedback: Boolean(state?.queuedFeedback),
+        remoteEnabled: state?.remoteEnabled ?? false,
       };
     });
   }
@@ -302,6 +308,8 @@ export class SessionManager {
       queuedAt: null,
       latestFeedback: "",
       history: [],
+      remoteEnabled: false,
+      agentContext: null,
     };
     this.feedbackState.set(sessionId, created);
     this.log("debug", "feedback.state.created", { sessionId });
@@ -311,6 +319,28 @@ export class SessionManager {
   isWaiting(sessionId: string): boolean {
     const state = this.feedbackState.get(sessionId);
     return Boolean(state?.pendingWaiter);
+  }
+
+  setRemoteEnabled(sessionId: string, enabled: boolean): void {
+    const state = this.getFeedbackState(sessionId);
+    state.remoteEnabled = enabled;
+    this.persistFeedbackState(sessionId);
+    this.events.onStateChange(sessionId);
+    this.log("info", "session.remote.toggled", { sessionId, enabled });
+  }
+
+  isRemoteEnabled(sessionId: string): boolean {
+    const state = this.feedbackState.get(sessionId);
+    return state?.remoteEnabled ?? false;
+  }
+
+  setAgentContext(sessionId: string, context: string | null): void {
+    const state = this.getFeedbackState(sessionId);
+    state.agentContext = context;
+  }
+
+  getAgentContext(sessionId: string): string | null {
+    return this.feedbackState.get(sessionId)?.agentContext ?? null;
   }
 
   hasQueuedFeedback(sessionId: string): boolean {
@@ -690,6 +720,7 @@ export class SessionManager {
       queuedAt: state.queuedAt,
       latestFeedback: state.latestFeedback,
       history: state.history,
+      remoteEnabled: state.remoteEnabled,
     };
 
     await this.store.saveFeedbackState(sessionId, persisted);

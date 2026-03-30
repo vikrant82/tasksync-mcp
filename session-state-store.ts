@@ -17,6 +17,7 @@ export type PersistedFeedbackState = {
     images?: ImageAttachment[];
     createdAt: string;
   }[];
+  remoteEnabled?: boolean;
 };
 
 export type PersistedSessionMetadata = {
