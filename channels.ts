@@ -223,19 +223,23 @@ export class TelegramChannel implements NotificationChannel {
       return;
     }
 
-    const message = this.formatNotification(params);
+    const messageParts = this.formatNotificationParts(params);
     const keyboard = this.buildKeyboard(params.sessionId, params.feedbackUrl);
 
     for (const chatId of this.registeredChatIds) {
       try {
         this.activeSessionByChat.set(chatId, params.sessionId);
-        await this.bot.api.sendMessage(chatId, message, {
-          parse_mode: "HTML",
-          reply_markup: keyboard,
-        });
+        for (let i = 0; i < messageParts.length; i++) {
+          const isLast = i === messageParts.length - 1;
+          await this.bot.api.sendMessage(chatId, messageParts[i], {
+            parse_mode: "HTML",
+            ...(isLast ? { reply_markup: keyboard } : {}),
+          });
+        }
         this.log("info", "telegram.notify.sent", {
           chatId,
           sessionId: params.sessionId,
+          parts: messageParts.length,
         });
       } catch (err) {
         this.log("error", "telegram.notify.error", {
@@ -279,24 +283,62 @@ export class TelegramChannel implements NotificationChannel {
     }
   }
 
-  private formatNotification(params: NotificationParams): string {
-    let msg = `🤖 <b>Agent is waiting for feedback</b>\n`;
-    msg += `<i>Session: ${this.escapeHtml(params.sessionId.slice(0, 20))}…</i>\n\n`;
+  private formatNotificationParts(params: NotificationParams): string[] {
+    const TELEGRAM_MAX = 4000; // leave margin under 4096 for safety
+    const header = `🤖 <b>Agent is waiting for feedback</b>\n<i>Session: ${this.escapeHtml(params.sessionId.slice(0, 20))}…</i>\n\n`;
+    const footer = `\n<a href="${params.feedbackUrl}">Open in browser</a>`;
 
-    if (params.context) {
-      const MAX_CONTEXT_CHARS = 3000;
-      const isTruncated = params.context.length > MAX_CONTEXT_CHARS;
-      const truncated = isTruncated
-        ? params.context.slice(0, MAX_CONTEXT_CHARS) + "…"
-        : params.context;
-      msg += `${this.markdownToTelegramHtml(truncated)}\n\n`;
-      if (isTruncated) {
-        msg += `<i>(truncated — <a href="${params.feedbackUrl}">see full context in browser</a>)</i>\n\n`;
+    if (!params.context) {
+      return [header + footer];
+    }
+
+    const contextHtml = this.markdownToTelegramHtml(params.context);
+
+    // If it all fits in one message, send as one
+    const singleMessage = header + contextHtml + footer;
+    if (singleMessage.length <= TELEGRAM_MAX) {
+      return [singleMessage];
+    }
+
+    // Split context into chunks at paragraph boundaries (\n\n)
+    const paragraphs = contextHtml.split("\n\n");
+    const parts: string[] = [];
+    let current = header;
+
+    for (const para of paragraphs) {
+      const addition = (current.length > header.length ? "\n\n" : "") + para;
+      if (current.length + addition.length > TELEGRAM_MAX && current.length > header.length) {
+        parts.push(current);
+        current = para;
+      } else {
+        current += addition;
       }
     }
 
-    msg += `<a href="${params.feedbackUrl}">Open in browser</a>`;
-    return msg;
+    // If a single paragraph exceeds the limit, force-split at line boundaries
+    if (current.length > TELEGRAM_MAX) {
+      const lines = current.split("\n");
+      let chunk = "";
+      for (const line of lines) {
+        if (chunk.length + line.length + 1 > TELEGRAM_MAX && chunk.length > 0) {
+          parts.push(chunk);
+          chunk = line;
+        } else {
+          chunk += (chunk ? "\n" : "") + line;
+        }
+      }
+      current = chunk;
+    }
+
+    // Append footer to last chunk if it fits, otherwise make a new part
+    if (current.length + footer.length <= TELEGRAM_MAX) {
+      parts.push(current + footer);
+    } else {
+      parts.push(current);
+      parts.push(footer);
+    }
+
+    return parts;
   }
 
   private buildKeyboard(
