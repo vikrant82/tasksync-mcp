@@ -235,6 +235,38 @@ export class TelegramChannel implements NotificationChannel {
     });
   }
 
+  /** Send a message with HTML parse_mode; on parse error, retry as plain text */
+  private async sendMessageSafe(
+    chatId: number,
+    text: string,
+    options: Record<string, unknown>
+  ): Promise<{ message_id: number } | null> {
+    try {
+      return await this.bot.api.sendMessage(
+        chatId,
+        text,
+        options as Parameters<typeof this.bot.api.sendMessage>[2]
+      );
+    } catch (err) {
+      const errStr = String(err);
+      if (errStr.includes("can't parse entities")) {
+        this.log("warn", "telegram.html_fallback", {
+          chatId,
+          error: errStr,
+        });
+        // Strip all HTML tags and retry as plain text
+        const plainText = text.replace(/<[^>]+>/g, "");
+        const { parse_mode, ...rest } = options;
+        return await this.bot.api.sendMessage(
+          chatId,
+          plainText,
+          rest as Parameters<typeof this.bot.api.sendMessage>[2]
+        );
+      }
+      throw err;
+    }
+  }
+
   async notify(params: NotificationParams): Promise<void> {
     if (this.registeredChatIds.size === 0) {
       this.log("warn", "telegram.notify.no_recipients", {
@@ -251,15 +283,16 @@ export class TelegramChannel implements NotificationChannel {
         this.activeSessionByChat.set(chatId, params.sessionId);
         for (let i = 0; i < messageParts.length; i++) {
           const isLast = i === messageParts.length - 1;
-          const sent = await this.bot.api.sendMessage(chatId, messageParts[i], {
+          const sent = await this.sendMessageSafe(chatId, messageParts[i], {
             parse_mode: "HTML",
             ...(isLast ? { reply_markup: keyboard } : {}),
           });
-          // Track all notification messages for reply-to routing (cap at 200 entries)
-          this.messageToSession.set(sent.message_id, params.sessionId);
-          if (this.messageToSession.size > 200) {
-            const oldest = this.messageToSession.keys().next().value;
-            if (oldest !== undefined) this.messageToSession.delete(oldest);
+          if (sent) {
+            this.messageToSession.set(sent.message_id, params.sessionId);
+            if (this.messageToSession.size > 200) {
+              const oldest = this.messageToSession.keys().next().value;
+              if (oldest !== undefined) this.messageToSession.delete(oldest);
+            }
           }
         }
         this.log("info", "telegram.notify.sent", {
@@ -291,7 +324,7 @@ export class TelegramChannel implements NotificationChannel {
     for (const chatId of this.registeredChatIds) {
       try {
         for (const part of messageParts) {
-          await this.bot.api.sendMessage(chatId, part, {
+          await this.sendMessageSafe(chatId, part, {
             parse_mode: "HTML",
           });
         }
@@ -471,13 +504,25 @@ export class TelegramChannel implements NotificationChannel {
 
   /** Convert common markdown patterns to Telegram HTML. Escapes HTML first for safety. */
   private markdownToTelegramHtml(text: string): string {
+    // Protect code blocks and inline code from further processing
+    const placeholders: string[] = [];
+    const placeholder = (html: string) => {
+      const idx = placeholders.length;
+      placeholders.push(html);
+      return `\x00PH${idx}\x00`;
+    };
+
     let html = this.escapeHtml(text);
 
     // Code blocks: ```lang\n...\n``` → <pre><code>...</code></pre>
-    html = html.replace(/```(?:\w*)\n([\s\S]*?)```/g, "<pre><code>$1</code></pre>");
+    html = html.replace(/```(?:\w*)\n([\s\S]*?)```/g, (_m, code) =>
+      placeholder(`<pre><code>${code}</code></pre>`)
+    );
 
     // Inline code: `...` → <code>...</code>
-    html = html.replace(/`([^`]+)`/g, "<code>$1</code>");
+    html = html.replace(/`([^`]+)`/g, (_m, code) =>
+      placeholder(`<code>${code}</code>`)
+    );
 
     // Bold+italic: ***text*** or ___text___
     html = html.replace(/\*{3}(.+?)\*{3}/g, "<b><i>$1</i></b>");
@@ -506,6 +551,9 @@ export class TelegramChannel implements NotificationChannel {
 
     // Blockquotes: > text → "text" (Telegram has blockquote but only in recent clients)
     html = html.replace(/^&gt;\s?(.+)$/gm, "┃ <i>$1</i>");
+
+    // Restore code placeholders
+    html = html.replace(/\x00PH(\d+)\x00/g, (_m, idx) => placeholders[parseInt(idx)]);
 
     return html;
   }
