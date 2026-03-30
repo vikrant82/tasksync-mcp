@@ -284,11 +284,15 @@ export class TelegramChannel implements NotificationChannel {
     msg += `<i>Session: ${this.escapeHtml(params.sessionId.slice(0, 20))}…</i>\n\n`;
 
     if (params.context) {
-      const truncated =
-        params.context.length > 1500
-          ? params.context.slice(0, 1500) + "…"
-          : params.context;
+      const MAX_CONTEXT_CHARS = 3000;
+      const isTruncated = params.context.length > MAX_CONTEXT_CHARS;
+      const truncated = isTruncated
+        ? params.context.slice(0, MAX_CONTEXT_CHARS) + "…"
+        : params.context;
       msg += `${this.markdownToTelegramHtml(truncated)}\n\n`;
+      if (isTruncated) {
+        msg += `<i>(truncated — <a href="${params.feedbackUrl}">see full context in browser</a>)</i>\n\n`;
+      }
     }
 
     msg += `<a href="${params.feedbackUrl}">Open in browser</a>`;
