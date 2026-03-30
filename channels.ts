@@ -121,6 +121,13 @@ export class TelegramChannel implements NotificationChannel {
       }
     }
 
+    // Global error handler for bot middleware errors
+    this.bot.catch((err) => {
+      this.log("error", "telegram.bot.error", {
+        error: String(err.error ?? err),
+      });
+    });
+
     // /start — user registration
     this.bot.command("start", async (ctx) => {
       const chatId = ctx.chat.id;
@@ -230,6 +237,24 @@ export class TelegramChannel implements NotificationChannel {
 
     // Start polling (non-blocking via runner)
     this.runner = run(this.bot);
+
+    // Monitor runner for fatal errors (e.g., 409 Conflict from another bot instance)
+    // Without this, runner crashes become unhandled promise rejections that kill the process
+    const runnerTask = this.runner.task();
+    if (runnerTask) {
+      runnerTask.catch((err) => {
+        const errStr = String(err);
+        if (errStr.includes("409") || errStr.includes("Conflict")) {
+          this.log("error", "telegram.runner.conflict", {
+            error: "Another bot instance is polling with the same token. Each TaskSync server needs its own Telegram bot. Polling stopped — outbound notifications may still work.",
+          });
+        } else {
+          this.log("error", "telegram.runner.fatal", { error: errStr });
+        }
+        this.runner = null;
+      });
+    }
+
     this.log("info", "telegram.initialized", {
       registeredChatIds: [...this.registeredChatIds],
     });
