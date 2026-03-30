@@ -11,6 +11,7 @@ With MCP, you get a tool but agents don't know to use it — you'd have to paste
 - Adds a `get_feedback` tool that blocks until you submit feedback via the TaskSync web UI
 - Injects a **daemon agent** that maintains a continuous work-feedback loop
 - Optionally augments your existing agents (ask, build, etc.) with the same feedback protocol
+- **Session resiliency** — SSE keepalives prevent idle timeouts, and the plugin silently reconnects through server restarts with exponential backoff. Agents never see transient errors.
 
 ## Prerequisites
 
@@ -75,9 +76,9 @@ Environment variable overrides: `TASKSYNC_SERVER_URL`, `TASKSYNC_AUGMENT_AGENTS`
 
 ## How it works
 
-The plugin connects to your TaskSync server via REST:
+The plugin connects to your TaskSync server via SSE (Server-Sent Events):
 
-1. **`get_feedback` tool** — Long-polls `POST /api/wait/:sessionId` until feedback is submitted. Supports image attachments (saved to temp files; experimental native injection via transform hook)
+1. **`get_feedback` tool** — Opens an SSE stream to `GET /api/stream/:sessionId`. The server sends 30-second keepalives to prevent idle timeouts. When feedback arrives, it's delivered as an SSE event and the stream closes. If the connection drops (server restart, network glitch), the plugin automatically reconnects with exponential backoff (1s → 2s → 4s → … → 15s cap) — the agent never sees the interruption.
 2. **Config hook** — Injects a `daemon` agent + augments specified agents
 3. **Event hook** — Cleans up sessions on deletion
 

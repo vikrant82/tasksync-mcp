@@ -97,3 +97,6 @@ tmp/
 temp/
 .tasksync/session-state.json
 pnpm-lock.yaml
+
+# Cloned repos for research
+opencode/
