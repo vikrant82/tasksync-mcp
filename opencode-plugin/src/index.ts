@@ -4,9 +4,6 @@ import { loadConfig } from "./config.js";
 import { DAEMON_AGENT_PROMPT } from "./daemon-prompt.js";
 import { DAEMON_OVERLAY_FULL } from "./daemon-overlay.js";
 import { DAEMON_OVERLAY_COMPACT } from "./daemon-overlay-compact.js";
-import { mkdirSync, writeFileSync } from "fs";
-import { tmpdir } from "os";
-import { join } from "path";
 
 interface ImageAttachment {
   data: string;
@@ -15,9 +12,8 @@ interface ImageAttachment {
 
 /**
  * Module-level cache for images received from feedback responses.
- * Keyed by a unique reference ID embedded in tool metadata.
- * Used by the experimental.chat.messages.transform hook to inject
- * images as FilePart entries into the message history.
+ * Keyed by OpenCode sessionID. Used by the tool.execute.after hook
+ * to inject images as native FilePart attachments on the tool result.
  */
 const pendingImages = new Map<string, ImageAttachment[]>();
 
@@ -81,48 +77,39 @@ const plugin: Plugin = async ({ directory }) => {
       get_feedback: getFeedback,
     },
 
-    // Layer 2 (experimental): Inject images as FileParts into the message history
-    // before each LLM call. This hook fires on every generation request with a fresh
-    // copy of the complete message history. If the Go backend maps FilePart entries
-    // to native image content, the LLM will be able to "see" the attached images.
-    "experimental.chat.messages.transform": async (
-      _input: {},
-      output: { messages: Array<{ info: { id: string; sessionID: string }; parts: any[] }> },
+    // Layer 2: Inject images as FilePart attachments on the tool result.
+    // This hook fires after execute() returns but before the result is persisted.
+    // Since the hook fires AFTER resolveTools maps existing attachments (adding PartBase
+    // fields), attachments we inject here must include id/sessionID/messageID themselves.
+    // OpenCode validates these via zod: id starts with "prt", sessionID with "ses",
+    // messageID with "msg".
+    "tool.execute.after": async (
+      input: { tool: string; sessionID: string; callID: string },
+      output: Record<string, unknown>,
     ) => {
-      if (!output?.messages?.length) return;
+      if (input.tool !== "get_feedback") return;
 
-      for (const msg of output.messages) {
-        if (!msg?.parts) continue;
+      const images = pendingImages.get(input.sessionID);
+      if (!images || images.length === 0) return;
 
-        for (const part of msg.parts) {
-          if (
-            part.type !== "tool" ||
-            part.tool !== "get_feedback" ||
-            part.state?.status !== "completed"
-          ) {
-            continue;
-          }
+      console.error(`[tasksync] Layer 2: injecting ${images.length} image(s) as attachments for session ${input.sessionID}`);
 
-          const imageRef = part.state?.metadata?.imageRef;
-          if (!imageRef) continue;
+      output.attachments = images.map((img, idx) => {
+        const ext = img.mimeType.split("/")[1] || "png";
+        return {
+          // PartBase fields required by OpenCode's FilePart schema
+          id: `prt_${Date.now().toString(36)}_${idx}_${Math.random().toString(36).slice(2, 10)}`,
+          sessionID: input.sessionID,
+          messageID: `msg_${Date.now().toString(36)}_${idx}_${Math.random().toString(36).slice(2, 10)}`,
+          // FilePart fields
+          type: "file" as const,
+          mime: img.mimeType,
+          filename: `feedback-image-${idx}.${ext}`,
+          url: `data:${img.mimeType};base64,${img.data}`,
+        };
+      });
 
-          const images = pendingImages.get(imageRef);
-          if (!images || images.length === 0) continue;
-
-          // Inject images as attachments on the tool state
-          part.state.attachments = images.map(
-            (img: ImageAttachment, idx: number) => ({
-              type: "file" as const,
-              mime: img.mimeType,
-              filename: `feedback-image-${idx}.${img.mimeType.split("/")[1] || "png"}`,
-              url: `data:${img.mimeType};base64,${img.data}`,
-            }),
-          );
-
-          // Free memory — this ref has been processed
-          pendingImages.delete(imageRef);
-        }
-      }
+      pendingImages.delete(input.sessionID);
     },
 
     event: async ({ event }) => {
@@ -130,11 +117,7 @@ const plugin: Plugin = async ({ directory }) => {
         const sessionInfo = (event as { properties?: { info?: { id?: string } } }).properties?.info;
         if (sessionInfo?.id) {
           fetch(`${serverUrl}/sessions/${sessionInfo.id}`, { method: "DELETE" }).catch(() => {});
-
-          // Clean up any cached images for this session
-          for (const [ref, _images] of pendingImages) {
-            pendingImages.delete(ref);
-          }
+          pendingImages.delete(sessionInfo.id);
         }
       }
     },
@@ -193,7 +176,7 @@ type ConnectResult =
 async function connectAndWait(
   serverUrl: string,
   sessionId: string,
-  context: { abort: AbortSignal; metadata: (input: { metadata: Record<string, any> }) => void },
+  context: { abort: AbortSignal },
 ): Promise<ConnectResult> {
   const resp = await fetch(`${serverUrl}/api/stream/${sessionId}`, {
     signal: context.abort,
@@ -245,35 +228,9 @@ async function connectAndWait(
           images?: ImageAttachment[];
         };
 
+        // Cache images for the tool.execute.after hook to inject as attachments
         if (result.images && result.images.length > 0) {
-          const imageDir = join(tmpdir(), "tasksync-images", sessionId);
-          try {
-            mkdirSync(imageDir, { recursive: true });
-          } catch {}
-
-          const savedPaths: string[] = [];
-          for (let i = 0; i < result.images.length; i++) {
-            const img = result.images[i];
-            const ext = img.mimeType.split("/")[1] || "png";
-            const filePath = join(imageDir, `image-${i}.${ext}`);
-            try {
-              writeFileSync(filePath, Buffer.from(img.data, "base64"));
-              savedPaths.push(filePath);
-            } catch (err) {
-              console.error(`[tasksync] Failed to save image ${i}: ${err}`);
-            }
-          }
-
-          const imageRef = crypto.randomUUID();
-          pendingImages.set(imageRef, result.images);
-          context.metadata({ metadata: { imageRef } });
-
-          if (savedPaths.length > 0) {
-            return {
-              retry: false,
-              value: `${result.content}\n\n[User attached ${savedPaths.length} image(s): ${savedPaths.join(", ")}]`,
-            };
-          }
+          pendingImages.set(sessionId, result.images);
         }
 
         return { retry: false, value: result.content };

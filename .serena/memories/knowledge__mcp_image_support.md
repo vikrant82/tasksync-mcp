@@ -20,36 +20,27 @@ Updated: 2026-03-18
 - **VS Code Copilot**: Unknown — needs testing
 - **Cursor**: Unknown — needs testing
 
-### OpenCode Plugin Image Support (IMPLEMENTED — March 2026)
+### OpenCode Plugin Image Support (COMPLETED — March 2026)
 
-Two-layer approach since plugin `tool.execute()` returns `Promise<string>` only:
+**Native injection via `tool.execute.after` hook:**
+- Images received via SSE feedback event, cached in module-level `pendingImages` Map keyed by OpenCode `sessionID`
+- `tool.execute.after` hook fires after `execute()` returns but before result is persisted
+- Hook injects images as `FilePart` attachments with proper PartBase fields:
+  - `id`: `prt_` + timestamp-based ID
+  - `sessionID`: from hook `input.sessionID` (real OpenCode session ID)
+  - `messageID`: `msg_` + timestamp-based ID
+  - Plus `type: "file"`, `mime`, `filename`, `url` (data URI with base64)
+- OpenCode validates against zod schema: id starts with "prt", sessionID with "ses", messageID with "msg"
+- LLM sees images natively — no file-reading tools needed
 
-**Layer 1 — Temp Files (Reliable Fallback)**
-- Images saved to `$TMPDIR/tasksync-images/<sessionId>/image-N.<ext>`
-- Tool returns: `"<feedback text>\n\n[User attached N image(s): <paths>]"`
-- Agents can read images via file-reading tools (e.g., MCP `Read` tool supports images)
+**Root cause of earlier Layer 2 failures:**
+1. `experimental.chat.messages.transform` hook: `context.metadata({ imageRef })` was called during execute, but OpenCode's `fromPlugin()` wrapper discards callback metadata. Only `{ truncated }` was persisted. Transform hook never saw imageRef.
+2. First `tool.execute.after` attempt: attachments lacked PartBase fields (id/sessionID/messageID). OpenCode threw zod validation errors.
 
-**Layer 2 — experimental.chat.messages.transform Hook (Best-Effort)**
-- Images cached in module-level `pendingImages` Map keyed by UUID ref
-- Ref stored in tool state via `context.metadata({ metadata: { imageRef } })`
-- Transform hook scans message history for `get_feedback` ToolParts with matching `imageRef`
-- Injects `FilePart` entries with `data:` URIs into `ToolStateCompleted.attachments`
-- Whether Go backend maps these to native LLM image content is **untested** (Go plugin code not public)
-- Pattern validated against community plugins: `opencode-vibeguard` (text redaction) and `opencode-dynamic-context-pruning` (message pruning) both use this hook successfully for message mutation
-
-**Layer 2 Status (as of 2026-03-30):**
-- Transform hook runs and sees completed `get_feedback` tool parts
-- BUT tool parts only show `metadataKeys: ["truncated"]`, NOT our `imageRef`
-- `context.metadata({ metadata: { imageRef } })` is called but not surfacing where transform expects
-- `read` tool parts had `attachmentCount: 1`, proving attachments ARE possible on tool parts
-- Layer 2 remains broken — further investigation needed
-
-**Key Constraints Discovered:**
-- Plugin `tool.execute()` → `Promise<string>` only (no structured content)
-- Go `ToolResult.Content` is string-only; providers send string to LLM APIs
-- `ToolStateCompleted.attachments` exists in TypeScript types but Go-side handling is opaque
-- Go public repo (github.com/opencode-ai/opencode) predates plugin system; plugin IPC is not visible
-- `@opencode-ai/plugin@1.3.3`, `@opencode-ai/sdk@1.3.3` are latest versions
+**Layer 1 (temp files) — REMOVED:**
+- Previously saved images to `$TMPDIR/tasksync-images/<sessionId>/image-N.<ext>` and appended paths to text response
+- Removed after Layer 2 proved reliable — text paths were redundant noise
+- Code preserved in `ref/layer1-temp-files` branch, documented in `knowledge__layer1_temp_files` memory
 
 ### Design Decision
 Implemented MCP-spec-correct `ImageContent` blocks despite opencode's current limitation because:
