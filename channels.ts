@@ -409,50 +409,70 @@ export class TelegramChannel implements NotificationChannel {
       return [header + footer];
     }
 
+    // First, try the simple case: convert and check if it fits
     const contextHtml = this.markdownToTelegramHtml(params.context);
-
-    // If it all fits in one message, send as one
     const singleMessage = header + contextHtml + footer;
     if (singleMessage.length <= TELEGRAM_MAX) {
       return [singleMessage];
     }
 
-    // Split context into chunks at paragraph boundaries (\n\n)
-    const paragraphs = contextHtml.split("\n\n");
-    const parts: string[] = [];
-    let current = header;
+    // Need to split. Split the PLAIN MARKDOWN first, then convert each chunk.
+    // This ensures each chunk has balanced HTML tags after conversion.
+    const plainContext = params.context;
+    const paragraphs = plainContext.split("\n\n");
+    const chunks: string[] = [];
+    let currentChunk = "";
+
+    // Estimate overhead for header/footer in the split scenario
+    const overhead = header.length + footer.length + 200; // margin for HTML expansion
+    const chunkLimit = TELEGRAM_MAX - overhead;
 
     for (const para of paragraphs) {
-      const addition = (current.length > header.length ? "\n\n" : "") + para;
-      if (current.length + addition.length > TELEGRAM_MAX && current.length > header.length) {
-        parts.push(current);
-        current = para;
+      const separator = currentChunk.length > 0 ? "\n\n" : "";
+      if (currentChunk.length + separator.length + para.length > chunkLimit && currentChunk.length > 0) {
+        chunks.push(currentChunk);
+        currentChunk = para;
       } else {
-        current += addition;
+        currentChunk += separator + para;
       }
     }
 
-    // If a single paragraph exceeds the limit, force-split at line boundaries
-    if (current.length > TELEGRAM_MAX) {
-      const lines = current.split("\n");
-      let chunk = "";
+    // Handle oversized single paragraphs by splitting at line boundaries
+    if (currentChunk.length > chunkLimit) {
+      const lines = currentChunk.split("\n");
+      let lineChunk = "";
       for (const line of lines) {
-        if (chunk.length + line.length + 1 > TELEGRAM_MAX && chunk.length > 0) {
-          parts.push(chunk);
-          chunk = line;
+        if (lineChunk.length + line.length + 1 > chunkLimit && lineChunk.length > 0) {
+          chunks.push(lineChunk);
+          lineChunk = line;
         } else {
-          chunk += (chunk ? "\n" : "") + line;
+          lineChunk += (lineChunk ? "\n" : "") + line;
         }
       }
-      current = chunk;
+      currentChunk = lineChunk;
     }
 
-    // Append footer to last chunk if it fits, otherwise make a new part
-    if (current.length + footer.length <= TELEGRAM_MAX) {
-      parts.push(current + footer);
-    } else {
-      parts.push(current);
-      parts.push(footer);
+    if (currentChunk.length > 0) {
+      chunks.push(currentChunk);
+    }
+
+    // Now convert each plain-text chunk to HTML and add header/footer
+    const parts: string[] = [];
+    for (let i = 0; i < chunks.length; i++) {
+      const chunkHtml = this.markdownToTelegramHtml(chunks[i]);
+      const isFirst = i === 0;
+      const isLast = i === chunks.length - 1;
+      
+      let part = "";
+      if (isFirst) {
+        part = header + chunkHtml;
+      } else {
+        part = chunkHtml;
+      }
+      if (isLast) {
+        part += footer;
+      }
+      parts.push(part);
     }
 
     return parts;
@@ -463,47 +483,71 @@ export class TelegramChannel implements NotificationChannel {
     const TELEGRAM_MAX = 4000;
     const header = `📋 <b>Agent Status Update</b>\n<i>Session: ${this.escapeHtml(params.sessionId.slice(0, 20))}…</i>\n\n`;
     const footer = `\n\n<i>ℹ️ No response needed — this is an informational update.</i>\n<a href="${params.feedbackUrl}">Open in browser</a>`;
-    const contextHtml = this.markdownToTelegramHtml(params.context);
 
+    // First, try the simple case: convert and check if it fits
+    const contextHtml = this.markdownToTelegramHtml(params.context);
     const singleMessage = header + contextHtml + footer;
     if (singleMessage.length <= TELEGRAM_MAX) {
       return [singleMessage];
     }
 
-    // Split at paragraph boundaries, same logic as formatNotificationParts
-    const paragraphs = contextHtml.split("\n\n");
-    const parts: string[] = [];
-    let current = header;
+    // Need to split. Split the PLAIN MARKDOWN first, then convert each chunk.
+    // This ensures each chunk has balanced HTML tags after conversion.
+    const plainContext = params.context;
+    const paragraphs = plainContext.split("\n\n");
+    const chunks: string[] = [];
+    let currentChunk = "";
+
+    // Estimate overhead for header/footer in the split scenario
+    const overhead = header.length + footer.length + 200; // margin for HTML expansion
+    const chunkLimit = TELEGRAM_MAX - overhead;
 
     for (const para of paragraphs) {
-      const addition = (current.length > header.length ? "\n\n" : "") + para;
-      if (current.length + addition.length > TELEGRAM_MAX && current.length > header.length) {
-        parts.push(current);
-        current = para;
+      const separator = currentChunk.length > 0 ? "\n\n" : "";
+      if (currentChunk.length + separator.length + para.length > chunkLimit && currentChunk.length > 0) {
+        chunks.push(currentChunk);
+        currentChunk = para;
       } else {
-        current += addition;
+        currentChunk += separator + para;
       }
     }
 
-    if (current.length > TELEGRAM_MAX) {
-      const lines = current.split("\n");
-      let chunk = "";
+    // Handle oversized single paragraphs by splitting at line boundaries
+    if (currentChunk.length > chunkLimit) {
+      const lines = currentChunk.split("\n");
+      let lineChunk = "";
       for (const line of lines) {
-        if (chunk.length + line.length + 1 > TELEGRAM_MAX && chunk.length > 0) {
-          parts.push(chunk);
-          chunk = line;
+        if (lineChunk.length + line.length + 1 > chunkLimit && lineChunk.length > 0) {
+          chunks.push(lineChunk);
+          lineChunk = line;
         } else {
-          chunk += (chunk ? "\n" : "") + line;
+          lineChunk += (lineChunk ? "\n" : "") + line;
         }
       }
-      current = chunk;
+      currentChunk = lineChunk;
     }
 
-    if (current.length + footer.length <= TELEGRAM_MAX) {
-      parts.push(current + footer);
-    } else {
-      parts.push(current);
-      parts.push(footer);
+    if (currentChunk.length > 0) {
+      chunks.push(currentChunk);
+    }
+
+    // Now convert each plain-text chunk to HTML and add header/footer
+    const parts: string[] = [];
+    for (let i = 0; i < chunks.length; i++) {
+      const chunkHtml = this.markdownToTelegramHtml(chunks[i]);
+      const isFirst = i === 0;
+      const isLast = i === chunks.length - 1;
+      
+      let part = "";
+      if (isFirst) {
+        part = header + chunkHtml;
+      } else {
+        part = chunkHtml;
+      }
+      if (isLast) {
+        part += footer;
+      }
+      parts.push(part);
     }
 
     return parts;
