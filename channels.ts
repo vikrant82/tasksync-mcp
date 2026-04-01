@@ -266,21 +266,27 @@ export class TelegramChannel implements NotificationChannel {
     text: string,
     options: Record<string, unknown>
   ): Promise<{ message_id: number } | null> {
+    // Repair any malformed HTML before sending
+    const repairedText =
+      options.parse_mode === "HTML" ? this.repairHtml(text) : text;
     try {
       return await this.bot.api.sendMessage(
         chatId,
-        text,
+        repairedText,
         options as Parameters<typeof this.bot.api.sendMessage>[2]
       );
     } catch (err) {
       const errStr = String(err);
-      if (errStr.includes("can't parse entities")) {
+      if (
+        errStr.includes("can't parse entities") ||
+        errStr.includes("Bad Request")
+      ) {
         this.log("warn", "telegram.html_fallback", {
           chatId,
           error: errStr,
         });
         // Strip all HTML tags and retry as plain text
-        const plainText = text.replace(/<[^>]+>/g, "");
+        const plainText = repairedText.replace(/<[^>]+>/g, "");
         const { parse_mode, ...rest } = options;
         return await this.bot.api.sendMessage(
           chatId,
@@ -518,6 +524,91 @@ export class TelegramChannel implements NotificationChannel {
       .text("👎 Reject", `fb:reject:${sessionId.slice(0, 50)}`)
       .row()
       .text("▶️ Continue", `fb:continue:${sessionId.slice(0, 50)}`);
+  }
+
+
+  /**
+   * Repairs malformed HTML by ensuring all tags are properly nested.
+   * Handles two cases:
+   *  1. Overlapping tags (e.g. `<b>...<i>...</b>...</i>`) — closes and reopens
+   *     inner tags at the boundary so each element is well-nested.
+   *  2. Stray close tags with no matching open — removes them.
+   *  3. Unclosed tags at end of string — appends closing tags.
+   */
+  private repairHtml(html: string): string {
+    const telegramTags = new Set([
+      "b",
+      "strong",
+      "i",
+      "em",
+      "u",
+      "ins",
+      "s",
+      "strike",
+      "del",
+      "code",
+      "pre",
+      "a",
+      "blockquote",
+      "tg-spoiler",
+      "tg-emoji",
+    ]);
+    const tagRegex = /<(\/?)([a-z][a-z0-9-]*)(\s[^>]*)?>/gi;
+    // Stack stores { tag, openTag } to preserve attributes when reopening
+    const stack: Array<{ tag: string; openTag: string }> = [];
+    let result = "";
+    let lastIdx = 0;
+    let match: RegExpExecArray | null;
+
+    while ((match = tagRegex.exec(html)) !== null) {
+      const [fullTag, slash, rawName] = match;
+      const tag = rawName.toLowerCase();
+      if (!telegramTags.has(tag)) continue;
+
+      const isClosing = slash === "/";
+
+      if (!isClosing) {
+        stack.push({ tag, openTag: fullTag });
+      } else {
+        const openIdx = stack.findLastIndex((s) => s.tag === tag);
+        if (openIdx === -1) {
+          // Stray close tag (no matching open) → remove it
+          result += html.slice(lastIdx, match.index);
+          lastIdx = match.index + fullTag.length;
+          continue;
+        }
+        if (openIdx < stack.length - 1) {
+          // Intervening open tags must be closed and reopened
+          const intervening = stack.splice(openIdx + 1);
+          stack.pop();
+
+          const closers = intervening
+            .slice()
+            .reverse()
+            .map((s) => `</${s.tag}>`)
+            .join("");
+          const reopeners = intervening.map((s) => s.openTag).join("");
+
+          result +=
+            html.slice(lastIdx, match.index) + closers + fullTag + reopeners;
+          lastIdx = match.index + fullTag.length;
+
+          for (const s of intervening) {
+            stack.push(s);
+          }
+        } else {
+          stack.pop();
+        }
+      }
+    }
+
+    result += html.slice(lastIdx);
+
+    while (stack.length > 0) {
+      result += `</${stack.pop()!.tag}>`;
+    }
+
+    return result;
   }
 
   private escapeHtml(text: string): string {
