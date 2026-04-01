@@ -321,6 +321,7 @@ function buildUiStatePayload(targetSessionId?: string) {
     history: state?.history || [],
     sessions,
     channelsAvailable: channelManager?.hasChannels ?? false,
+    agentContext: state?.agentContext || null,
   };
 }
 
@@ -598,8 +599,8 @@ function registerServerHandlers(targetServer: Server) {
             const context = sessionManager.getAgentContext(sessionId);
             channelManager.notify({
               sessionId,
+              sessionAlias: sessionManager.getSessionAlias(sessionId),
               context: context ?? undefined,
-              feedbackUrl: `http://localhost:${uiPort}/session/${encodeURIComponent(sessionId)}`,
             }).catch((err) => {
               logEvent("error", "feedback.notify.error", { sessionId, error: String(err) });
             });
@@ -911,10 +912,11 @@ function startFeedbackUI() {
       res.status(400).json({ error: "Missing context" });
       return;
     }
-    const feedbackUrl = `http://localhost:${uiPort}`;
+    sessionManager.setAgentContext(sessionId, context);
+
     logEvent("info", "api.status.fyi", { sessionId, contextLength: context.length });
 
-    await channelManager.sendFYI({ sessionId, context, feedbackUrl });
+    await channelManager.sendFYI({ sessionId, sessionAlias: sessionManager.getSessionAlias(sessionId), context });
     res.json({ ok: true, sessionId });
   });
 
@@ -1062,8 +1064,8 @@ function startFeedbackUI() {
       const context = agentContext || sessionManager.getAgentContext(sessionId);
       channelManager.notify({
         sessionId,
+        sessionAlias: sessionManager.getSessionAlias(sessionId),
         context: context ?? undefined,
-        feedbackUrl: `http://localhost:${uiPort}/session/${encodeURIComponent(sessionId)}`,
       }).catch((err) => {
         logEvent("error", "api.stream.notify.error", { sessionId, error: String(err) });
       });

@@ -342,6 +342,7 @@ export class SessionManager {
   setAgentContext(sessionId: string, context: string | null): void {
     const state = this.getFeedbackState(sessionId);
     state.agentContext = context;
+    this.events.onStateChange(sessionId);
   }
 
   getAgentContext(sessionId: string): string | null {

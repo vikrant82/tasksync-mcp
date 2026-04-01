@@ -161,10 +161,58 @@ export const FEEDBACK_HTML = `<!DOCTYPE html>
     70% { box-shadow: 0 0 0 8px rgba(63,185,80,0); }
     100% { box-shadow: 0 0 0 0 rgba(63,185,80,0); }
   }
-  @media (prefers-reduced-motion: reduce) {
+   @media (prefers-reduced-motion: reduce) {
     .wait-banner.waiting { animation: none; }
     * { transition-duration: 0.01ms !important; }
   }
+
+  /* Agent context panel */
+  .agent-context-panel {
+    margin: 0.5rem 0 0.75rem;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--bg-surface);
+    overflow: hidden;
+    transition: border-color var(--transition-normal);
+  }
+  .agent-context-panel:has(.agent-context-content:not(:empty)) {
+    border-color: rgba(121,192,255,0.35);
+  }
+  .agent-context-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0.45rem 0.75rem;
+    background: rgba(121,192,255,0.06);
+    border-bottom: 1px solid var(--border);
+    font-size: 0.78rem;
+    color: var(--fg-muted);
+  }
+  .agent-context-title {
+    font-weight: 500;
+    color: #79c0ff;
+  }
+  :root[data-theme="light"] .agent-context-title {
+    color: #0969da;
+  }
+  :root[data-theme="light"] .agent-context-panel:has(.agent-context-content:not(:empty)) {
+    border-color: rgba(9,105,218,0.3);
+  }
+  :root[data-theme="light"] .agent-context-header {
+    background: rgba(9,105,218,0.04);
+  }
+  .agent-context-content {
+    padding: 0.6rem 0.75rem;
+    font-size: 0.82rem;
+    line-height: 1.55;
+    max-height: 300px;
+    overflow-y: auto;
+    white-space: pre-wrap;
+    word-break: break-word;
+    color: var(--fg);
+  }
+  .agent-context-content:empty { display: none; }
+  .agent-context-content.collapsed { display: none; }
   textarea {
     width: 100%;
     min-height: 200px;
@@ -341,6 +389,13 @@ ${FEEDBACK_HTML_ENHANCED_STYLES}
   <div class="subtitle">Type your feedback below. Press <kbd>Cmd+Enter</kbd> to submit. <span class="connection-status" id="connection-status"><span class="connection-dot" id="connection-dot"></span> <span id="connection-label">Connecting...</span></span></div>
   <div id="active-session-summary" class="filepath">ACTIVE_SESSION_INFO</div>
   <div id="wait-banner" class="wait-banner idle" role="status" aria-live="polite">Checking agent wait state...</div>
+  <div id="agent-context-panel" class="agent-context-panel" style="display:none;" role="region" aria-labelledby="agent-context-heading">
+    <div class="agent-context-header">
+      <span id="agent-context-heading" class="agent-context-title">Last assistant message</span>
+      <button type="button" id="agent-context-toggle" class="btn-secondary btn-small" aria-expanded="true" aria-controls="agent-context-content">Collapse</button>
+    </div>
+    <div id="agent-context-content" class="agent-context-content"></div>
+  </div>
   <div class="layout">
     <div class="main-column">
       <div class="panel">
@@ -411,7 +466,8 @@ ${FEEDBACK_HTML_ENHANCED_STYLES}
         <h2 id="settings-heading">Settings</h2>
          <div class="notify-controls">
            <label><input id="notify-sound" type="checkbox" checked /> Sound alert</label>
-           <label><input id="notify-desktop" type="checkbox" /> Desktop alert</label>
+            <label><input id="notify-desktop" type="checkbox" /> Desktop alert</label>
+           <label><input id="show-agent-context" type="checkbox" /> Show assistant messages</label>
            <label>Mode:
              <select id="notify-mode" aria-label="Notification mode">
                <option value="focused">Focused session</option>
@@ -466,6 +522,10 @@ ${FEEDBACK_HTML_ENHANCED_STYLES}
   const themeIconEl = document.getElementById('theme-icon');
   const themeLabelEl = document.getElementById('theme-label');
   const disconnectAfterEl = document.getElementById('disconnect-after');
+  const agentContextPanelEl = document.getElementById('agent-context-panel');
+  const agentContextContentEl = document.getElementById('agent-context-content');
+  const agentContextToggleEl = document.getElementById('agent-context-toggle');
+  const showAgentContextEl = document.getElementById('show-agent-context');
 
   // ── SSE and state tracking ──
   let uiEventSource = null;
@@ -486,6 +546,8 @@ ${FEEDBACK_HTML_ENHANCED_STYLES}
   const STORAGE_NOTIFY_DESKTOP = 'tasksync.notify.desktop';
   const STORAGE_NOTIFY_MODE = 'tasksync.notify.mode';
   const STORAGE_HISTORY_COLLAPSED = 'tasksync.history.collapsed';
+  const STORAGE_SHOW_AGENT_CONTEXT = 'tasksync.show_agent_context';
+  const STORAGE_AGENT_CONTEXT_COLLAPSED = 'tasksync.agent_context.collapsed';
    const STORAGE_DRAFT = pathSessionParam ? 'tasksync.draft.' + pathSessionParam : 'tasksync.draft';
   const STORAGE_THEME = 'tasksync.theme';
 
@@ -1038,6 +1100,7 @@ ${FEEDBACK_HTML_COMPOSER_HISTORY_SCRIPT}
     const targetSessionId = selectedSessionId || active;
     detectNotificationTransitions(sessions, targetSessionId);
     updateWaitBanner(targetSessionId, sessions);
+    updateAgentContextPanel(payload.agentContext || null);
 
     const sessionSignature = JSON.stringify(sessions.map((s) => [s.sessionId, s.alias, s.waitingForFeedback, s.hasQueuedFeedback, s.remoteEnabled])) + ':' + selectedSessionId + ':' + channelsAvailable;
     if (sessionSignature !== lastRenderedSessionSignature) {
