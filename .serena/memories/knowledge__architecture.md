@@ -1,4 +1,4 @@
-Updated 2026-03-27.
+Updated 2026-04-02.
 
 ## Two Integration Paths
 
@@ -31,8 +31,11 @@ Runtime centered in `index.ts` with two Express apps:
 - `session-manager.ts`: `SessionManager` class — sessions, feedback state, aliases, auto-prune
 - `session-state-store.ts`: file-backed persistence in `.tasksync/session-state.json`
 - Session IDs: MCP uses `{client-slug}-{generation}` (e.g., `opencode-1`), plugin uses OpenCode session IDs
-- Auto-prune: every 1 min, removes sessions inactive >10 min (configurable, not waiting)
-- Prune resets `activeUiSessionId` if the active session was pruned
+- Auto-prune: checks every 1 min, threshold configurable via UI dropdown ("Auto prune after"). Default: "Never" (0 = disabled). All session types treated equally (no plugin skip). Uses `deleteSession()` for full cleanup.
+- Manual prune ("Prune Stale" button): 30-minute threshold, removes all non-waiting sessions.
+- `pruneStale()` is async with `pruning` guard flag to prevent overlap from `setInterval`.
+- `setAgentContext()` calls `markActivity()` when context non-null → FYI messages and agent context updates reset stale timer.
+- Activity tracked by: `setWaiter` (feedback_request), `deliverFeedback`, `consumeQueuedFeedback`, `setAgentContext` (agent_context), `markSessionActivity` (get_feedback MCP handler).
 
 ## Feedback Flow
 - Waiter pattern: `setWaiter()` → `deliverFeedback()` (resolves) or `clearPendingWaiter()` (cancels)
@@ -74,10 +77,16 @@ Runtime centered in `index.ts` with two Express apps:
 - Server: `channelManager.notify()` triggered when waiter set + session has `remoteEnabled`
 - Plugin: `experimental.text.complete` hook caches agent text → sent as base64 `X-Agent-Context` header
 - Session state: `remoteEnabled` boolean (persisted), `agentContext` string (runtime)
+- `NotificationParams`/`FYIParams`: `sessionId`, `sessionAlias?`, `context` — no `feedbackUrl` (removed: localhost link unreachable from remote)
+- Telegram headers show session alias via `getSessionAlias()` fallback chain (manual → inferred → clientAlias → truncated ID)
 - UI: toggle button per session, `channelsAvailable` flag
 - Endpoints: `POST /sessions/:id/remote`, `GET /channels`
 
-## UI State
+## UI State & Push Architecture
 - SSE push from `/events`; broadcasts on session and waiter lifecycle transitions
 - Target session resolution: requested → active UI → first live → default constant
 - Wait banner with live elapsed timer
+- State payload (`buildUiStatePayload()`): includes sessions, waiters, `agentContext`, `channelsAvailable`
+- `onStateChange(sessionId)` triggers: `setWaiter`, `clearPendingWaiter`, `deliverFeedback`, `setAgentContext`, `deleteSession`, `setRemoteEnabled`, session alias changes, prune events
+- Plugin SSE: `GET /api/stream/:sessionId` — registers waiter, sends keepalive every 30s, feedback via SSE events. `activeSSEClients` Map tracks connections for graceful shutdown.
+- Client SSE: `GET /events` — UI EventSource for real-time state updates

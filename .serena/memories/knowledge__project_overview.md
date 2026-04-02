@@ -1,4 +1,4 @@
-Updated 2026-03-27.
+Updated 2026-04-02.
 
 `tasksync-mcp` provides iterative human feedback loops for coding agents through the `get_feedback` tool.
 
@@ -16,12 +16,16 @@ Updated 2026-03-27.
 - Session persistence across server restarts
 - Auto-prune of stale sessions
 - Agent prompt injection (OpenCode plugin auto-injects daemon agent + optional augmentation)
+- Remote mode: Telegram notifications with inline keyboard quick-replies
+- "Show assistant messages" panel in UI (opt-in, displays agent's last message)
+- Session alias display in Telegram messages
 
 ## File Structure
 - `index.ts` — Main server (~1200 lines): MCP transport, UI server, REST API
 - `session-manager.ts` — Session lifecycle, feedback state, aliases, auto-prune (~700 lines)
 - `session-state-store.ts` — File-backed persistence
 - `feedback-html.ts` + supporting scripts — Embedded web UI
+- `channels.ts` — Remote notification channels (ChannelManager, TelegramChannel, repairHtml, markdown→HTML)
 - `stream-event-store.ts` — MCP-specific transient SSE replay
 - `opencode-plugin/` — Standalone OpenCode plugin package (thin HTTP client)
   - `src/index.ts` — Plugin entry (tools, config hook, event hook)
@@ -35,8 +39,13 @@ Updated 2026-03-27.
 - `task-sync-agent-copilot.md` — VS Code Copilot daemon prompt
 
 ## Stack
-TypeScript, Node.js, Express, `@modelcontextprotocol/sdk`, Jest/ts-jest
+TypeScript, Node.js, Express, `@modelcontextprotocol/sdk`, grammY v1.41.1, `@grammyjs/runner` v2.0.3, Jest/ts-jest
 
-## Branch: `main`
-All work merged. Published: `tasksync-mcp-http@1.0.0` (server), `opencode-tasksync@1.0.0` (plugin).
-Old branches: `simple-prune` (merged), `opencode-plugin` (parked monorepo approach).
+## Versions
+- Server: `tasksync-mcp-http` — latest v1.1.3 (npm)
+- Plugin: `opencode-tasksync` — latest v1.2.0 (npm)
+- GitHub: `vikrant82/tasksync-mcp`
+
+## Branches
+- `main` — all work merged
+- Open PR #7: `feat/telegram-alias-agent-context-ui` (session alias in Telegram + agent context UI panel)

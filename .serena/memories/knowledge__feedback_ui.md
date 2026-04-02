@@ -16,8 +16,11 @@ Updated: 2026-03-27
 ## Session Management
 - "Route Here" button (shows "Current" when active), "Set Default", "Rename", "Prune Stale"
 - Session rows: alias/ID, metadata (created, last activity, wait duration), status chips
-- Stale sessions (>1h inactive) visually dimmed (55% opacity)
+- Stale sessions (>30min inactive) visually dimmed (55% opacity)
 - Prune button shows stale count, disabled when 0
+- Auto-prune dropdown: Never(0, default) / 5 / 10 / 20 / 30 / 60 / 120 / 1440 min
+- "Never" disables auto-prune; "Prune Stale" button becomes primary cleanup
+- FYI messages reset stale timer (via `setAgentContext` → `markActivity`)
 - Wait banner: live elapsed timer ("Agent waiting for feedback (2m 34s)")
 
 ## Image Support
@@ -33,6 +36,17 @@ Updated: 2026-03-27
 - Shortcuts: Ctrl+B, Ctrl+I, Ctrl+K, Ctrl+`
 - Tab: 2 spaces, Shift+Tab: dedent, Escape: exit textarea
 - Enter: auto-continue lists (empty item stops)
+
+## Agent Context Panel (Show Assistant Messages)
+- **Enable**: Settings → "Show assistant messages" checkbox (off by default)
+- Displays last agent message (agentContext) in a collapsible panel below the wait banner
+- Content rendered as plain text (textContent, not innerHTML) — safe, preserves whitespace
+- Collapse/expand button with state persisted to localStorage
+- Styled for dark/light themes with blue accent (#79c0ff / #0969da)
+- Max-height 300px with overflow scroll for long messages
+- Data flow: `setAgentContext()` → `onStateChange()` SSE broadcast → `applyUiState()` → `updateAgentContextPanel()`
+- Agent context is **transient** (in-memory only, not persisted in conversation history)
+- Sources: MCP agent context set via tool call; OpenCode plugin captures via `experimental.text.complete` hook + `X-Agent-Context` header; FYI endpoint also stores context
 
 ## Notifications
 - Sound: chime on waiting transition (mutable)
