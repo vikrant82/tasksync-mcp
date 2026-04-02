@@ -58,9 +58,7 @@ const DEFAULT_FEEDBACK_SESSION = "__default__";
 const STREAM_RETRY_INTERVAL_MS = 2000;
 const KEEPALIVE_INTERVAL_MS = 30000; // 30s SSE comment keepalive to prevent HTTP connection timeout
 const AUTO_PRUNE_INTERVAL_MS = 60 * 1000; // check for auto-prune every 1 minute
-const DEFAULT_DISCONNECT_AFTER_MINUTES = 20; // prune sessions inactive for >20 minutes by default
-const MIN_DISCONNECT_AFTER_MINUTES = 1;
-const MAX_DISCONNECT_AFTER_MINUTES = 24 * 60; // 1 day
+const DEFAULT_DISCONNECT_AFTER_MINUTES = 0; // "Never" — auto-prune disabled by default
 const DEBUG_BODY_MAX_CHARS = 2000; // truncate debug-logged bodies to this length
 
 // Registry of active SSE plugin connections — used for graceful shutdown notification
@@ -321,6 +319,7 @@ function buildUiStatePayload(targetSessionId?: string) {
     history: state?.history || [],
     sessions,
     channelsAvailable: channelManager?.hasChannels ?? false,
+    agentContext: state?.agentContext || null,
   };
 }
 
@@ -598,8 +597,8 @@ function registerServerHandlers(targetServer: Server) {
             const context = sessionManager.getAgentContext(sessionId);
             channelManager.notify({
               sessionId,
+              sessionAlias: sessionManager.getSessionAlias(sessionId),
               context: context ?? undefined,
-              feedbackUrl: `http://localhost:${uiPort}/session/${encodeURIComponent(sessionId)}`,
             }).catch((err) => {
               logEvent("error", "feedback.notify.error", { sessionId, error: String(err) });
             });
@@ -911,10 +910,11 @@ function startFeedbackUI() {
       res.status(400).json({ error: "Missing context" });
       return;
     }
-    const feedbackUrl = `http://localhost:${uiPort}`;
+    sessionManager.setAgentContext(sessionId, context);
+
     logEvent("info", "api.status.fyi", { sessionId, contextLength: context.length });
 
-    await channelManager.sendFYI({ sessionId, context, feedbackUrl });
+    await channelManager.sendFYI({ sessionId, sessionAlias: sessionManager.getSessionAlias(sessionId), context });
     res.json({ ok: true, sessionId });
   });
 
@@ -1062,8 +1062,8 @@ function startFeedbackUI() {
       const context = agentContext || sessionManager.getAgentContext(sessionId);
       channelManager.notify({
         sessionId,
+        sessionAlias: sessionManager.getSessionAlias(sessionId),
         context: context ?? undefined,
-        feedbackUrl: `http://localhost:${uiPort}/session/${encodeURIComponent(sessionId)}`,
       }).catch((err) => {
         logEvent("error", "api.stream.notify.error", { sessionId, error: String(err) });
       });

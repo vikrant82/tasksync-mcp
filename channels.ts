@@ -13,8 +13,8 @@ export interface ImageAttachment {
 
 export interface NotificationParams {
   sessionId: string;
+  sessionAlias?: string;
   context?: string;
-  feedbackUrl: string;
 }
 
 export interface FeedbackCallback {
@@ -23,8 +23,8 @@ export interface FeedbackCallback {
 
 export interface FYIParams {
   sessionId: string;
+  sessionAlias?: string;
   context: string;
-  feedbackUrl: string;
 }
 
 export interface NotificationChannel {
@@ -307,7 +307,7 @@ export class TelegramChannel implements NotificationChannel {
     }
 
     const messageParts = this.formatNotificationParts(params);
-    const keyboard = this.buildKeyboard(params.sessionId, params.feedbackUrl);
+    const keyboard = this.buildKeyboard(params.sessionId);
 
     for (const chatId of this.registeredChatIds) {
       try {
@@ -408,17 +408,19 @@ export class TelegramChannel implements NotificationChannel {
 
   private formatNotificationParts(params: NotificationParams): string[] {
     const TELEGRAM_MAX = 4000; // leave margin under 4096 for safety
-    const header = `🤖 <b>Agent is waiting for feedback</b>\n<i>Session: ${this.escapeHtml(params.sessionId.slice(0, 20))}…</i>\n\n`;
-    const footer = `\n<a href="${params.feedbackUrl}">Open in browser</a>`;
+    const sessionLabel = params.sessionAlias && params.sessionAlias !== params.sessionId
+      ? this.escapeHtml(params.sessionAlias)
+      : `${this.escapeHtml(params.sessionId.slice(0, 20))}…`;
+    const header = `🤖 <b>Agent is waiting for feedback</b>\n<i>Session: ${sessionLabel}</i>\n\n`;
 
     if (!params.context) {
-      return [header + footer];
+      return [header.trimEnd()];
     }
 
     const contextHtml = this.markdownToTelegramHtml(params.context);
 
     // If it all fits in one message, send as one
-    const singleMessage = header + contextHtml + footer;
+    const singleMessage = header + contextHtml;
     if (singleMessage.length <= TELEGRAM_MAX) {
       return [singleMessage];
     }
@@ -453,13 +455,7 @@ export class TelegramChannel implements NotificationChannel {
       current = chunk;
     }
 
-    // Append footer to last chunk if it fits, otherwise make a new part
-    if (current.length + footer.length <= TELEGRAM_MAX) {
-      parts.push(current + footer);
-    } else {
-      parts.push(current);
-      parts.push(footer);
-    }
+    parts.push(current);
 
     return parts;
   }
@@ -467,8 +463,11 @@ export class TelegramChannel implements NotificationChannel {
 
   private formatFYIParts(params: FYIParams): string[] {
     const TELEGRAM_MAX = 4000;
-    const header = `📋 <b>Agent Status Update</b>\n<i>Session: ${this.escapeHtml(params.sessionId.slice(0, 20))}…</i>\n\n`;
-    const footer = `\n\n<i>ℹ️ No response needed — this is an informational update.</i>\n<a href="${params.feedbackUrl}">Open in browser</a>`;
+    const sessionLabel = params.sessionAlias && params.sessionAlias !== params.sessionId
+      ? this.escapeHtml(params.sessionAlias)
+      : `${this.escapeHtml(params.sessionId.slice(0, 20))}…`;
+    const header = `📋 <b>Agent Status Update</b>\n<i>Session: ${sessionLabel}</i>\n\n`;
+    const footer = `\n\n<i>ℹ️ No response needed — this is an informational update.</i>`;
     const contextHtml = this.markdownToTelegramHtml(params.context);
 
     const singleMessage = header + contextHtml + footer;
@@ -515,10 +514,7 @@ export class TelegramChannel implements NotificationChannel {
     return parts;
   }
 
-  private buildKeyboard(
-    sessionId: string,
-    _feedbackUrl: string
-  ): InlineKeyboard {
+  private buildKeyboard(sessionId: string): InlineKeyboard {
     return new InlineKeyboard()
       .text("👍 Approve", `fb:approve:${sessionId.slice(0, 50)}`)
       .text("👎 Reject", `fb:reject:${sessionId.slice(0, 50)}`)

@@ -14,7 +14,7 @@ import { SessionStateStore, type ImageAttachment, type PersistedFeedbackState } 
 // ============================================================================
 
 const DEFAULT_SESSION_ID = "__default__";
-const DEFAULT_DISCONNECT_AFTER_MINUTES = 20;
+const DEFAULT_DISCONNECT_AFTER_MINUTES = 0; // "Never" — auto-prune disabled by default
 const MIN_DISCONNECT_AFTER_MINUTES = 1;
 const MAX_DISCONNECT_AFTER_MINUTES = 24 * 60; // 1 day
 const AUTO_PRUNE_INTERVAL_MS = 60 * 1000; // Check every minute
@@ -91,6 +91,7 @@ export class SessionManager {
   private clientGenerations = new Map<string, number>();
   private activeUiSessionId = DEFAULT_SESSION_ID;
   private pruneIntervalId: NodeJS.Timeout | null = null;
+  private pruning = false;
 
   constructor(
     private store: SessionStateStore,
@@ -342,6 +343,10 @@ export class SessionManager {
   setAgentContext(sessionId: string, context: string | null): void {
     const state = this.getFeedbackState(sessionId);
     state.agentContext = context;
+    if (context !== null) {
+      this.markActivity(sessionId, "agent_context");
+    }
+    this.events.onStateChange(sessionId);
   }
 
   getAgentContext(sessionId: string): string | null {
@@ -561,15 +566,21 @@ export class SessionManager {
 
   getDisconnectAfterMinutes(): number {
     const configured = this.store.getSnapshot().settings?.disconnectAfterMinutes;
+    if (configured === 0) return 0; // "Never" — auto-prune disabled
     if (!Number.isFinite(configured)) return DEFAULT_DISCONNECT_AFTER_MINUTES;
     return Math.max(MIN_DISCONNECT_AFTER_MINUTES, Math.min(MAX_DISCONNECT_AFTER_MINUTES, Math.floor(configured)));
   }
 
   async setDisconnectAfterMinutes(minutes: number): Promise<void> {
-    const normalized = Math.max(
-      MIN_DISCONNECT_AFTER_MINUTES,
-      Math.min(MAX_DISCONNECT_AFTER_MINUTES, Math.floor(minutes))
-    );
+    let normalized: number;
+    if (minutes === 0) {
+      normalized = 0; // "Never" — auto-prune disabled
+    } else {
+      normalized = Math.max(
+        MIN_DISCONNECT_AFTER_MINUTES,
+        Math.min(MAX_DISCONNECT_AFTER_MINUTES, Math.floor(minutes))
+      );
+    }
     await this.store.setDisconnectAfterMinutes(normalized);
     this.log("info", "settings.disconnect_after.updated", { minutes: normalized });
     this.events.onStateChange();
@@ -588,82 +599,72 @@ export class SessionManager {
    * 1. Sessions with active pendingWaiter are NEVER pruned (protected)
    * 2. Sessions inactive longer than disconnectAfterMinutes are pruned
    */
-  pruneStale(): number {
-    const now = Date.now();
-    const disconnectAfterMs = this.getDisconnectAfterMinutes() * 60 * 1000;
-    let pruned = 0;
+  async pruneStale(): Promise<number> {
+    // Guard against overlapping async runs
+    if (this.pruning) return 0;
 
-    for (const [sessionId, entry] of this.sessions.entries()) {
-      const state = this.feedbackState.get(sessionId);
+    const disconnectMinutes = this.getDisconnectAfterMinutes();
+    if (disconnectMinutes === 0) return 0; // "Never" — auto-prune disabled
 
-      // Protected: session is waiting for feedback
-      if (state?.pendingWaiter) {
-        continue;
+    this.pruning = true;
+    try {
+      const now = Date.now();
+      const disconnectAfterMs = disconnectMinutes * 60 * 1000;
+      let pruned = 0;
+
+      // Collect candidates from live sessions
+      const candidates: string[] = [];
+      for (const [sessionId, entry] of this.sessions.entries()) {
+        const state = this.feedbackState.get(sessionId);
+        if (state?.pendingWaiter) continue; // Protected: actively waiting for feedback
+
+        const lastActivity = Date.parse(entry.lastActivityAt);
+        if (isNaN(lastActivity)) continue;
+
+        if (now - lastActivity > disconnectAfterMs) {
+          candidates.push(sessionId);
+        }
       }
 
-      // Protected: plugin sessions (no MCP transport) are stateless HTTP clients
-      // that always reconnect. They don't have a transport lifecycle signal, so
-      // auto-prune would incorrectly kill them during gaps between tool calls
-      // (e.g., while the agent processes feedback before calling get_feedback again).
-      // Plugin sessions are cleaned up via: session.deleted events, manual prune, or UI delete.
-      if (!entry.transport) {
-        continue;
+      // Prune live sessions via deleteSession (closes transport, clears aliases, etc.)
+      for (const sessionId of candidates) {
+        try {
+          await this.deleteSession(sessionId, "auto_prune");
+          pruned++;
+          this.log("info", "session.auto-pruned", {
+            sessionId,
+            disconnectAfterMinutes: disconnectMinutes,
+          });
+        } catch (err) {
+          this.log("error", "session.auto-prune.error", { sessionId, error: String(err) });
+        }
       }
 
-      const lastActivity = Date.parse(entry.lastActivityAt);
-      if (isNaN(lastActivity)) continue;
+      // Clean up orphaned persisted sessions (not in live sessions map)
+      const persistedSessions = this.store.getSnapshot().sessionMetadataById;
+      for (const [sessionId, meta] of Object.entries(persistedSessions)) {
+        if (this.sessions.has(sessionId)) continue; // still live (or already pruned above)
 
-      const inactiveMs = now - lastActivity;
-      if (inactiveMs > disconnectAfterMs) {
-        // Prune this session
-        this.sessions.delete(sessionId);
-        this.feedbackState.delete(sessionId);
-        this.store.deleteSession(sessionId);
-        pruned++;
+        const state = this.feedbackState.get(sessionId);
+        if (state?.pendingWaiter) continue;
 
-        this.log("info", "session.auto-pruned", {
-          sessionId,
-          inactiveMs,
-          disconnectAfterMinutes: this.getDisconnectAfterMinutes(),
-        });
+        const lastActivity = meta?.lastActivityAt ? Date.parse(meta.lastActivityAt) : 0;
+        if (lastActivity > 0 && (now - lastActivity) > disconnectAfterMs) {
+          this.feedbackState.delete(sessionId);
+          await this.store.deleteSession(sessionId);
+          pruned++;
+
+          this.log("info", "session.auto-pruned.orphaned", {
+            sessionId,
+            inactiveMs: now - lastActivity,
+          });
+        }
       }
+
+      return pruned;
+    } finally {
+      this.pruning = false;
     }
-
-    // Also clean up orphaned persisted sessions
-    const persistedSessions = this.store.getSnapshot().sessionMetadataById;
-    for (const [sessionId, meta] of Object.entries(persistedSessions)) {
-      if (this.sessions.has(sessionId)) continue; // still live
-
-      const state = this.feedbackState.get(sessionId);
-      if (state?.pendingWaiter) continue; // protected (shouldn't happen, but be safe)
-
-      const lastActivity = meta?.lastActivityAt ? Date.parse(meta.lastActivityAt) : 0;
-      if (lastActivity > 0 && (now - lastActivity) > disconnectAfterMs) {
-        this.feedbackState.delete(sessionId);
-        this.store.deleteSession(sessionId);
-        pruned++;
-
-        this.log("info", "session.auto-pruned.orphaned", {
-          sessionId,
-          inactiveMs: now - lastActivity,
-        });
-      }
-    }
-
-    // If the active UI session was pruned, reset to the next available session
-    if (pruned > 0) {
-      if (!this.sessions.has(this.activeUiSessionId)) {
-        const nextSession = this.sessions.keys().next().value as string | undefined;
-        this.activeUiSessionId = nextSession ?? "";
-        this.store.setActiveUiSessionId(this.activeUiSessionId);
-        this.log("info", "session.active-ui-reset-after-prune", {
-          newActiveUiSessionId: this.activeUiSessionId || "(none)",
-        });
-      }
-      this.events.onStateChange();
-    }
-
-    return pruned;
   }
 
   /**

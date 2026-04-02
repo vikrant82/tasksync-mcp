@@ -469,6 +469,36 @@ export const FEEDBACK_HTML_COMPOSER_HISTORY_SCRIPT = `
   updateHistoryCollapseUi();
   updateHistoryJumpVisibility();
 
+  // ── Agent context panel ──
+  let agentContextCollapsed = localStorage.getItem(STORAGE_AGENT_CONTEXT_COLLAPSED) === '1';
+  showAgentContextEl.checked = localStorage.getItem(STORAGE_SHOW_AGENT_CONTEXT) === '1';
+  let lastAgentContext = null;
+
+  function updateAgentContextPanel(context) {
+    lastAgentContext = context;
+    const show = showAgentContextEl.checked && context;
+    agentContextPanelEl.style.display = show ? '' : 'none';
+    if (show) {
+      agentContextContentEl.textContent = context;
+      agentContextContentEl.classList.toggle('collapsed', agentContextCollapsed);
+      agentContextToggleEl.textContent = agentContextCollapsed ? 'Expand' : 'Collapse';
+      agentContextToggleEl.setAttribute('aria-expanded', String(!agentContextCollapsed));
+    }
+  }
+
+  showAgentContextEl.addEventListener('change', () => {
+    localStorage.setItem(STORAGE_SHOW_AGENT_CONTEXT, showAgentContextEl.checked ? '1' : '0');
+    updateAgentContextPanel(lastAgentContext);
+  });
+
+  agentContextToggleEl.addEventListener('click', () => {
+    agentContextCollapsed = !agentContextCollapsed;
+    localStorage.setItem(STORAGE_AGENT_CONTEXT_COLLAPSED, agentContextCollapsed ? '1' : '0');
+    agentContextContentEl.classList.toggle('collapsed', agentContextCollapsed);
+    agentContextToggleEl.textContent = agentContextCollapsed ? 'Expand' : 'Collapse';
+    agentContextToggleEl.setAttribute('aria-expanded', String(!agentContextCollapsed));
+  });
+
   // ── Audio context management ──
   function getAudioContext() {
     if (audioContext) return audioContext;
