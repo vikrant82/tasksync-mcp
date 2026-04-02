@@ -3,7 +3,7 @@
  * Covers composer state, toasts, local draft persistence, and markdown rendering helpers.
  */
 
-import { FEEDBACK_HTML_HISTORY_MARKDOWN_SCRIPT } from "./feedback-html-history-markdown-script.js";
+import { FEEDBACK_HTML_HISTORY_MARKDOWN_SCRIPT } from "./markdown.js";
 
 export const FEEDBACK_HTML_COMPOSER_HISTORY_SCRIPT = `
   const previousWaitBySession = new Map();

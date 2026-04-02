@@ -5,8 +5,8 @@
  * The placeholder ACTIVE_SESSION_INFO is replaced at serve time with the current session label.
  */
 
-import { FEEDBACK_HTML_ENHANCED_STYLES } from "./feedback-html-enhanced-styles.js";
-import { FEEDBACK_HTML_COMPOSER_HISTORY_SCRIPT } from "./feedback-html-composer-history-script.js";
+import { FEEDBACK_HTML_ENHANCED_STYLES } from "./styles.js";
+import { FEEDBACK_HTML_COMPOSER_HISTORY_SCRIPT } from "./scripts.js";
 
 export const FEEDBACK_HTML = `<!DOCTYPE html>
 <html lang="en">

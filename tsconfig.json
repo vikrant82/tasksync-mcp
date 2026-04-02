@@ -1,7 +1,7 @@
 {
   "compilerOptions": {
     "outDir": "./dist",
-    "rootDir": ".",
+    "rootDir": "./src",
     "moduleResolution": "NodeNext",
     "module": "NodeNext",
     "target": "ES2022",
@@ -12,15 +12,10 @@
     "forceConsistentCasingInFileNames": true
   },
   "include": [
-    "./**/*.ts"
+    "src/**/*.ts"
   ],
   "exclude": [
     "node_modules",
-    "dist",
-    "packages",
-    "opencode-plugin",
-    "opencode",
-    "__tests__",
-    "lib.ts"
+    "dist"
   ]
 }
