@@ -45,6 +45,7 @@ export type FeedbackChannelState = {
   }[];
   remoteEnabled: boolean;
   agentContext: string | null;
+  agentContextSource: "assistant" | "fyi" | null;
 };
 
 export type StreamableSessionEntry = {
@@ -135,6 +136,7 @@ export class SessionManager {
         history: Array.isArray(persisted.history) ? persisted.history : [],
         remoteEnabled: persisted.remoteEnabled === true,
         agentContext: null,
+        agentContextSource: null,
       });
     }
 
@@ -314,6 +316,7 @@ export class SessionManager {
       history: [],
       remoteEnabled: false,
       agentContext: null,
+      agentContextSource: null,
     };
     this.feedbackState.set(sessionId, created);
     this.log("debug", "feedback.state.created", { sessionId });
@@ -340,9 +343,10 @@ export class SessionManager {
     return state?.remoteEnabled ?? false;
   }
 
-  setAgentContext(sessionId: string, context: string | null): void {
+  setAgentContext(sessionId: string, context: string | null, source: "assistant" | "fyi" = "assistant"): void {
     const state = this.getFeedbackState(sessionId);
     state.agentContext = context;
+    state.agentContextSource = context !== null ? source : null;
     if (context !== null) {
       this.markActivity(sessionId, "agent_context");
     }
@@ -351,6 +355,10 @@ export class SessionManager {
 
   getAgentContext(sessionId: string): string | null {
     return this.feedbackState.get(sessionId)?.agentContext ?? null;
+  }
+
+  getAgentContextSource(sessionId: string): "assistant" | "fyi" | null {
+    return this.feedbackState.get(sessionId)?.agentContextSource ?? null;
   }
 
   hasQueuedFeedback(sessionId: string): boolean {

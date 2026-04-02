@@ -60,6 +60,38 @@ Runtime centered in `index.ts` with two Express apps:
 - Config from `.tasksync/config.json` (global `~/.tasksync/` → project `.tasksync/` → env vars)
 - OpenCode rejects unknown keys in `opencode.json`, so config uses dedicated files
 
+## Session Recovery (Server Restart)
+
+Persistence layer (`SessionStateStore` → `.tasksync/session-state.json`) enables seamless recovery:
+
+### Preserved across server restart:
+- Feedback history, queued feedback + images, latest feedback
+- Manual aliases, client generations (for alias inference)
+- Remote mode setting per session
+- Active UI session ID
+
+### Not preserved (runtime-only):
+- `pendingWaiter: null` — live Promise resolvers can't survive restart
+- `agentContext: null` — BUT plugin re-sends via `X-Agent-Context` header on reconnect
+- In-memory `sessions` Map entries (require live transport)
+
+### Plugin Recovery Flow:
+1. Server dies → plugin's `reader.read()` throws → retry loop: exponential backoff 1s→2s→4s→8s→15s cap
+2. Server restarts → `SessionManager.initialize()` → `hydrateFromStore()` restores persisted state
+3. Plugin reconnects → `GET /api/stream/:sessionId` → auto-registers session → `setWaiter()`
+4. Plugin sends `X-Agent-Context` header → context restored immediately
+5. If remote enabled → Telegram notification re-sent
+6. Observable: wait timer resets (new waiter start time), brief UI disconnection gap
+
+### UI Recovery Flow:
+- `EventSource` auto-reconnects (~3s default retry, no server-sent `retry:` field)
+- On reconnect, `/events` handler sends full state payload immediately
+- `applyUiState()` restores all UI elements
+
+### MCP Client Recovery:
+- Depends on MCP client implementation (reconnect behavior varies)
+- StreamableHTTPServerTransport uses transient in-memory replay (lost on restart)
+
 ## Logging
 - Compact structured logs via `logEvent()`
 - Debug HTTP logging with request IDs and MCP method hints

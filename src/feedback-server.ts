@@ -8,7 +8,7 @@
  */
 
 import express from "express";
-import { FEEDBACK_HTML } from "./feedback-html.js";
+import { FEEDBACK_HTML } from "./ui/feedback-html.js";
 
 const args = process.argv.slice(2);
 const portArg = args.find((a) => a.startsWith("--port="));

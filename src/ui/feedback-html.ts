@@ -5,8 +5,8 @@
  * The placeholder ACTIVE_SESSION_INFO is replaced at serve time with the current session label.
  */
 
-import { FEEDBACK_HTML_ENHANCED_STYLES } from "./feedback-html-enhanced-styles.js";
-import { FEEDBACK_HTML_COMPOSER_HISTORY_SCRIPT } from "./feedback-html-composer-history-script.js";
+import { FEEDBACK_HTML_ENHANCED_STYLES } from "./styles.js";
+import { FEEDBACK_HTML_COMPOSER_HISTORY_SCRIPT } from "./scripts.js";
 
 export const FEEDBACK_HTML = `<!DOCTYPE html>
 <html lang="en">
@@ -150,16 +150,16 @@ export const FEEDBACK_HTML = `<!DOCTYPE html>
     font-size: 0.85rem;
     transition: background var(--transition-normal), border-color var(--transition-normal), color var(--transition-normal);
   }
-  .wait-banner.waiting { display: block; border-color: rgba(63,185,80,0.45); background: rgba(63,185,80,0.12); color: #b6f0bf; animation: pulse 1.8s ease-in-out infinite; }
+  .wait-banner.waiting { display: block; border-color: rgba(63,185,80,0.45); background: rgba(63,185,80,0.12); color: #b6f0bf; animation: pulse 2.4s ease-in-out infinite; will-change: opacity; }
   .wait-banner.idle { display: block; border-color: rgba(88,166,255,0.35); background: rgba(88,166,255,0.1); color: #b9d8ff; }
   :root[data-theme="light"] .wait-banner.waiting { border-color: rgba(26,127,55,0.4); background: rgba(26,127,55,0.08); color: #1a7f37; }
   :root[data-theme="light"] .wait-banner.idle { border-color: rgba(9,105,218,0.3); background: rgba(9,105,218,0.06); color: #0969da; }
   .feedback-box.waiting { border-color: rgba(63,185,80,0.45); box-shadow: 0 0 0 3px rgba(63,185,80,0.08); }
   :root[data-theme="light"] .feedback-box.waiting { border-color: rgba(26,127,55,0.4); box-shadow: 0 0 0 3px rgba(26,127,55,0.06); }
   @keyframes pulse {
-    0% { box-shadow: 0 0 0 0 rgba(63,185,80,0.24); }
-    70% { box-shadow: 0 0 0 8px rgba(63,185,80,0); }
-    100% { box-shadow: 0 0 0 0 rgba(63,185,80,0); }
+    0% { opacity: 1; }
+    50% { opacity: 0.6; }
+    100% { opacity: 1; }
   }
    @media (prefers-reduced-motion: reduce) {
     .wait-banner.waiting { animation: none; }
@@ -207,10 +207,17 @@ export const FEEDBACK_HTML = `<!DOCTYPE html>
     line-height: 1.55;
     max-height: 300px;
     overflow-y: auto;
-    white-space: pre-wrap;
     word-break: break-word;
     color: var(--fg);
   }
+  .agent-context-content p { margin: 0.3em 0; }
+  .agent-context-content pre { margin: 0.4em 0; padding: 0.5em; background: var(--bg-input); border-radius: 4px; overflow-x: auto; white-space: pre-wrap; }
+  .agent-context-content code { font-size: 0.9em; background: var(--bg-input); padding: 0.1em 0.3em; border-radius: 3px; }
+  .agent-context-content pre code { background: none; padding: 0; }
+  .agent-context-content ul, .agent-context-content ol { margin: 0.3em 0; padding-left: 1.4em; }
+  .agent-context-content blockquote { margin: 0.3em 0; padding-left: 0.7em; border-left: 3px solid var(--border); color: var(--fg-muted); }
+  .agent-context-content h1, .agent-context-content h2, .agent-context-content h3,
+  .agent-context-content h4, .agent-context-content h5, .agent-context-content h6 { margin: 0.4em 0 0.2em; font-size: 0.92em; }
   .agent-context-content:empty { display: none; }
   .agent-context-content.collapsed { display: none; }
   textarea {
@@ -1101,7 +1108,7 @@ ${FEEDBACK_HTML_COMPOSER_HISTORY_SCRIPT}
     const targetSessionId = selectedSessionId || active;
     detectNotificationTransitions(sessions, targetSessionId);
     updateWaitBanner(targetSessionId, sessions);
-    updateAgentContextPanel(payload.agentContext || null);
+    updateAgentContextPanel(payload.agentContext || null, payload.agentContextSource || null);
 
     const sessionSignature = JSON.stringify(sessions.map((s) => [s.sessionId, s.alias, s.waitingForFeedback, s.hasQueuedFeedback, s.remoteEnabled])) + ':' + selectedSessionId + ':' + channelsAvailable;
     if (sessionSignature !== lastRenderedSessionSignature) {

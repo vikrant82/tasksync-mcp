@@ -78,6 +78,9 @@ export class TelegramChannel implements NotificationChannel {
   /** Maps Telegram message IDs to sessionIds for reply-to routing */
   private messageToSession = new Map<number, string>();
 
+  /** Caches session aliases learned from notify/FYI params for reply confirmations */
+  private sessionAliasCache = new Map<string, string>();
+
   constructor(config: TelegramChannelConfig, log: LogFn) {
     this.bot = new Bot(config.botToken);
     this.allowedChatIds =
@@ -186,7 +189,7 @@ export class TelegramChannel implements NotificationChannel {
       this.deliverFeedback(sessionId, action);
 
       await ctx.editMessageReplyMarkup({ reply_markup: undefined });
-      await ctx.reply(`✅ Sent: "${action}"`);
+      await ctx.reply(`✅ Sent "${action}" to ${this.sessionLabel(sessionId)}`);
     });
 
     // Handle unmatched callbacks
@@ -225,7 +228,7 @@ export class TelegramChannel implements NotificationChannel {
       });
 
       this.deliverFeedback(sessionId, text);
-      await ctx.reply(`✅ Feedback sent to session ${sessionId.slice(0, 12)}…`);
+      await ctx.reply(`✅ Feedback sent to ${this.sessionLabel(sessionId)}`);
     });
 
     // Auto-register allowed chat IDs so they receive notifications without /start after restart
@@ -306,6 +309,10 @@ export class TelegramChannel implements NotificationChannel {
       return;
     }
 
+    if (params.sessionAlias) {
+      this.sessionAliasCache.set(params.sessionId, params.sessionAlias);
+    }
+
     const messageParts = this.formatNotificationParts(params);
     const keyboard = this.buildKeyboard(params.sessionId);
 
@@ -350,6 +357,10 @@ export class TelegramChannel implements NotificationChannel {
       return;
     }
 
+    if (params.sessionAlias) {
+      this.sessionAliasCache.set(params.sessionId, params.sessionAlias);
+    }
+
     const messageParts = this.formatFYIParts(params);
 
     for (const chatId of this.registeredChatIds) {
@@ -391,6 +402,11 @@ export class TelegramChannel implements NotificationChannel {
   private isAuthorized(chatId: number): boolean {
     if (this.allowedChatIds && !this.allowedChatIds.has(chatId)) return false;
     return this.registeredChatIds.has(chatId);
+  }
+
+  private sessionLabel(sessionId: string): string {
+    const alias = this.sessionAliasCache.get(sessionId);
+    return alias && alias !== sessionId ? alias : `${sessionId.slice(0, 12)}…`;
   }
 
   private deliverFeedback(sessionId: string, content: string): void {

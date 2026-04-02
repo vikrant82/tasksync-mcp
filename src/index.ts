@@ -12,12 +12,10 @@ import {
 } from "@modelcontextprotocol/sdk/types.js";
 import { spawn } from "child_process";
 import { randomUUID } from "crypto";
-import { appendFile, mkdir } from "node:fs/promises";
-import path from "node:path";
 import { z } from "zod";
 import { zodToJsonSchema } from "zod-to-json-schema";
 import express from "express";
-import { FEEDBACK_HTML } from "./feedback-html.js";
+import { FEEDBACK_HTML } from "./ui/feedback-html.js";
 import { SessionStateStore, type ImageAttachment } from "./session-state-store.js";
 import { InMemoryStreamEventStore } from "./stream-event-store.js";
 import {
@@ -28,6 +26,20 @@ import {
   type PendingWaiter,
 } from "./session-manager.js";
 import { ChannelManager, type ChannelManagerConfig } from "./channels.js";
+import {
+  type LogLevel,
+  configureLogging,
+  shouldLog,
+  logEvent,
+  logDebugPretty,
+  installDebugHttpLogging,
+} from "./logging.js";
+import {
+  formatFeedbackResponse,
+  normalizeAlias,
+  inferAliasFromInitializeBody,
+  slugifyForSessionId,
+} from "./utils.js";
 
 const DEFAULT_TIMEOUT = 3_600_000; // safety-net timeout (1 hour); SSE keepalive prevents idle disconnects, this is the absolute max wait
 
@@ -44,6 +56,7 @@ const feedbackTimeout = heartbeat
   : 0; // heartbeat=false → no timeout, wait indefinitely (keepalive keeps connection alive)
 const logLevel = (process.env.TASKSYNC_LOG_LEVEL || "info").toLowerCase();
 const logFilePath = process.env.TASKSYNC_LOG_FILE?.trim() || "";
+configureLogging({ logLevel, logFilePath });
 
 // Channel config — Telegram bot token from env or CLI
 const telegramBotToken = process.env.TASKSYNC_TELEGRAM_BOT_TOKEN?.trim()
@@ -59,7 +72,6 @@ const STREAM_RETRY_INTERVAL_MS = 2000;
 const KEEPALIVE_INTERVAL_MS = 30000; // 30s SSE comment keepalive to prevent HTTP connection timeout
 const AUTO_PRUNE_INTERVAL_MS = 60 * 1000; // check for auto-prune every 1 minute
 const DEFAULT_DISCONNECT_AFTER_MINUTES = 0; // "Never" — auto-prune disabled by default
-const DEBUG_BODY_MAX_CHARS = 2000; // truncate debug-logged bodies to this length
 
 // Registry of active SSE plugin connections — used for graceful shutdown notification
 const activeSSEClients = new Map<string, import("express").Response>();
@@ -122,176 +134,7 @@ function markSessionActivity(sessionId: string, reason: string): void {
   sessionManager.markActivity(sessionId, reason);
 }
 
-type LogLevel = "debug" | "info" | "warn" | "error";
 
-const LOG_PRIORITY: Record<LogLevel, number> = {
-  debug: 10,
-  info: 20,
-  warn: 30,
-  error: 40,
-};
-
-function shouldLog(level: LogLevel): boolean {
-  const configured = (LOG_PRIORITY[logLevel as LogLevel] ?? LOG_PRIORITY.info);
-  return LOG_PRIORITY[level] >= configured;
-}
-
-function logEvent(level: LogLevel, event: string, details: Record<string, unknown> = {}) {
-  if (!shouldLog(level)) return;
-  const payload = {
-    ts: new Date().toISOString(),
-    level,
-    event,
-    ...details,
-  };
-  const line = `[tasksync] ${JSON.stringify(payload)}`;
-  console.error(line);
-  if (logFilePath) {
-    void appendLogLine(line);
-  }
-}
-
-async function appendLogLine(line: string) {
-  if (!logFilePath) return;
-  await mkdir(path.dirname(logFilePath), { recursive: true });
-  await appendFile(logFilePath, `${line}\n`, "utf8");
-}
-
-function maybeParseJson(text: string): unknown {
-  const trimmed = text.trim();
-  if (!trimmed) return "";
-  try {
-    return JSON.parse(trimmed);
-  } catch {
-    return text;
-  }
-}
-
-function parseSseDebugBody(text: string): unknown {
-  const trimmed = text.trim();
-  if (!trimmed) return "";
-
-  const blocks = trimmed.split(/\n\n+/);
-  const events = blocks
-    .map((block) => {
-      const event: Record<string, unknown> = {};
-      const dataLines: string[] = [];
-
-      for (const rawLine of block.split("\n")) {
-        const line = rawLine.replace(/\r$/, "");
-        if (!line || line.startsWith(":")) continue;
-        const separatorIndex = line.indexOf(":");
-        const field = separatorIndex >= 0 ? line.slice(0, separatorIndex) : line;
-        let value = separatorIndex >= 0 ? line.slice(separatorIndex + 1) : "";
-        if (value.startsWith(" ")) value = value.slice(1);
-
-        if (field === "data") {
-          dataLines.push(value);
-          continue;
-        }
-
-        if (field === "retry") {
-          const parsedRetry = Number(value);
-          event.retry = Number.isFinite(parsedRetry) ? parsedRetry : value;
-          continue;
-        }
-
-        event[field] = value;
-      }
-
-      if (dataLines.length > 0) {
-        const dataText = dataLines.join("\n");
-        event.data = maybeParseJson(dataText);
-      }
-
-      return Object.keys(event).length > 0 ? event : null;
-    })
-    .filter((event): event is Record<string, unknown> => event !== null);
-
-  if (events.length === 0) {
-    return text;
-  }
-
-  return {
-    sseEvents: events,
-  };
-}
-
-function normalizeDebugBody(body: unknown, contentType?: string): unknown {
-  if (Buffer.isBuffer(body)) {
-    return normalizeDebugBody(body.toString("utf8"), contentType);
-  }
-  if (body instanceof Uint8Array) {
-    return normalizeDebugBody(Buffer.from(body).toString("utf8"), contentType);
-  }
-  if (Array.isArray(body) && body.every((item) => typeof item === "number")) {
-    return normalizeDebugBody(Buffer.from(body).toString("utf8"), contentType);
-  }
-  if (typeof body === "string") {
-    if (contentType?.includes("text/html")) {
-      return `[HTML content omitted, ${body.length} chars]`;
-    }
-    if (contentType?.includes("text/event-stream")) {
-      return parseSseDebugBody(body);
-    }
-    if (body.length > DEBUG_BODY_MAX_CHARS) {
-      return maybeParseJson(body.slice(0, DEBUG_BODY_MAX_CHARS) + `... [truncated, ${body.length} total chars]`);
-    }
-    return maybeParseJson(body);
-  }
-  if (body === undefined) {
-    return null;
-  }
-  return body;
-}
-
-function extractMcpDebugMeta(body: unknown): Record<string, unknown> {
-  if (!body || typeof body !== "object" || Array.isArray(body)) {
-    return {};
-  }
-
-  const record = body as Record<string, unknown>;
-  const method = typeof record.method === "string" ? record.method : undefined;
-  const id = typeof record.id === "string" || typeof record.id === "number" ? record.id : undefined;
-  const params = record.params && typeof record.params === "object" && !Array.isArray(record.params)
-    ? (record.params as Record<string, unknown>)
-    : undefined;
-  const result = record.result && typeof record.result === "object" && !Array.isArray(record.result)
-    ? (record.result as Record<string, unknown>)
-    : undefined;
-
-  const meta: Record<string, unknown> = {};
-  if (id !== undefined) meta.jsonRpcId = id;
-  if (method) {
-    meta.mcpMethod = method;
-    if (method === "tools/call") {
-      const toolName = typeof params?.name === "string" ? params.name : undefined;
-      if (toolName) meta.mcpToolName = toolName;
-    }
-  }
-
-  if (result) {
-    if (Array.isArray(result.tools)) {
-      meta.mcpResponseKind = "tools/list";
-      meta.mcpToolCount = result.tools.length;
-    } else if (Array.isArray(result.content)) {
-      meta.mcpResponseKind = "tools/call";
-      meta.mcpContentCount = result.content.length;
-    }
-  }
-
-  return meta;
-}
-
-function logDebugPretty(label: string, payload: unknown) {
-  if (!shouldLog("debug")) return;
-  const formatted = typeof payload === "string" ? payload : JSON.stringify(payload, null, 2);
-  const line = `[tasksync][debug] ${label}\n${formatted}`;
-  console.error(line);
-  if (logFilePath) {
-    void appendLogLine(line);
-  }
-}
 
 function buildUiStatePayload(targetSessionId?: string) {
   const activeUiSessionId = getActiveUiSessionId();
@@ -320,6 +163,7 @@ function buildUiStatePayload(targetSessionId?: string) {
     sessions,
     channelsAvailable: channelManager?.hasChannels ?? false,
     agentContext: state?.agentContext || null,
+    agentContextSource: state?.agentContextSource || null,
   };
 }
 
@@ -329,87 +173,6 @@ function broadcastUiState(_triggerSessionId?: string) {
     const payload = JSON.stringify(buildUiStatePayload(client.targetSessionId));
     client.res.write(`event: state\ndata: ${payload}\n\n`);
   }
-}
-
-function installDebugHttpLogging(app: express.Express, scope: string) {
-  app.use((req, res, next) => {
-    if (!shouldLog("debug")) {
-      next();
-      return;
-    }
-
-    const startedAt = Date.now();
-    const requestId = randomUUID();
-    const responseChunks: Buffer[] = [];
-    let totalResponseBytes = 0;
-    const MAX_RESPONSE_LOG_BYTES = 50_000;
-    const originalWrite = res.write.bind(res);
-    const originalEnd = res.end.bind(res);
-
-    function toLoggedBuffer(chunk: unknown): Buffer | null {
-      if (chunk === undefined || chunk === null) return null;
-      if (Buffer.isBuffer(chunk)) return chunk;
-      if (chunk instanceof Uint8Array) return Buffer.from(chunk);
-      if (Array.isArray(chunk) && chunk.every((item) => typeof item === "number")) {
-        return Buffer.from(chunk);
-      }
-      return Buffer.from(String(chunk), "utf8");
-    }
-
-    function shouldCapture(chunk: Buffer): boolean {
-      // Skip SSE keepalive comments from debug accumulation
-      const text = chunk.toString("utf8");
-      if (text === ": keepalive\n\n") return false;
-      // Stop accumulating after threshold
-      if (totalResponseBytes >= MAX_RESPONSE_LOG_BYTES) return false;
-      return true;
-    }
-
-    res.write = ((chunk: unknown, ...args: unknown[]) => {
-      const loggedChunk = toLoggedBuffer(chunk);
-      if (loggedChunk && shouldCapture(loggedChunk)) {
-        responseChunks.push(loggedChunk);
-        totalResponseBytes += loggedChunk.length;
-      }
-      return originalWrite(chunk as never, ...(args as Parameters<typeof originalWrite> extends [unknown, ...infer Rest] ? Rest : never));
-    }) as typeof res.write;
-
-    res.end = ((chunk?: unknown, ...args: unknown[]) => {
-      const loggedChunk = toLoggedBuffer(chunk);
-      if (loggedChunk) {
-        responseChunks.push(loggedChunk);
-      }
-      return originalEnd(chunk as never, ...(args as Parameters<typeof originalEnd> extends [unknown?, ...infer Rest] ? Rest : never));
-    }) as typeof res.end;
-
-    logDebugPretty(`${scope}.request`, {
-      requestId,
-      method: req.method,
-      path: req.path,
-      query: req.query,
-      headers: req.headers,
-      ...extractMcpDebugMeta(normalizeDebugBody(req.body, String(req.headers["content-type"] || ""))),
-      body: normalizeDebugBody(req.body, String(req.headers["content-type"] || "")),
-    });
-
-    res.on("finish", () => {
-      const rawBody = Buffer.concat(responseChunks).toString("utf8");
-      const responseContentType = String(res.getHeader("content-type") || "");
-      const normalizedResponseBody = normalizeDebugBody(rawBody, responseContentType);
-      logDebugPretty(`${scope}.response`, {
-        requestId,
-        method: req.method,
-        path: req.path,
-        statusCode: res.statusCode,
-        durationMs: Date.now() - startedAt,
-        headers: res.getHeaders(),
-        ...extractMcpDebugMeta(normalizedResponseBody),
-        body: normalizedResponseBody,
-      });
-    });
-
-    next();
-  });
 }
 
 const GetFeedbackArgsSchema = z.object({}).strict();
@@ -446,43 +209,6 @@ function persistAsync(task: string, work: Promise<void>) {
  * - MCP polling/keep-alive requests
  */
 // NOTE: markSessionActivity is now handled by SessionManager (see facade function at top)
-
-function formatFeedbackResponse(content: string, images?: ImageAttachment[]): { content: ({ type: "text"; text: string } | { type: "image"; data: string; mimeType: string })[] } {
-  const blocks: ({ type: "text"; text: string } | { type: "image"; data: string; mimeType: string })[] = [];
-  blocks.push({ type: "text", text: content });
-  if (images && images.length > 0) {
-    for (const img of images) {
-      blocks.push({ type: "image", data: img.data, mimeType: img.mimeType });
-    }
-  }
-  return { content: blocks };
-}
-
-function normalizeAlias(raw: unknown): string {
-  if (typeof raw !== "string") return "";
-  return raw.trim().replace(/\s+/g, " ").slice(0, 80);
-}
-
-// NOTE: getSessionAlias is now handled by SessionManager (see facade function at top)
-
-function inferAliasFromInitializeBody(body: unknown): string {
-  if (!body || typeof body !== "object") return "";
-  const params = (body as { params?: unknown }).params;
-  if (!params || typeof params !== "object") return "";
-  const clientInfo = (params as { clientInfo?: unknown }).clientInfo;
-  if (!clientInfo || typeof clientInfo !== "object") return "";
-
-  const name = normalizeAlias((clientInfo as { name?: unknown }).name);
-  const version = normalizeAlias((clientInfo as { version?: unknown }).version);
-  if (!name) return "";
-  return version ? `${name} ${version}` : name;
-}
-
-/** Converts an inferred client alias (e.g., "opencode 1.2.24") into a short, URL-safe session ID prefix (e.g., "opencode"). */
-function slugifyForSessionId(clientAlias: string): string {
-  const namePart = clientAlias.split(/\s+/)[0] || "session";
-  return namePart.toLowerCase().replace(/[^a-z0-9-]/g, "-").replace(/-+/g, "-").replace(/^-|-$/g, "") || "session";
-}
 
 async function resolvePendingFeedback(content: string, rawSessionId?: string, images?: ImageAttachment[]): Promise<boolean> {
   const sessionId = getSessionId(rawSessionId);
@@ -778,6 +504,7 @@ function startFeedbackUI() {
       defaultUiSessionId: payload.activeUiSessionId,
       activeUiSessionId: payload.activeUiSessionId,
       sessions: payload.sessions,
+      channelsAvailable: payload.channelsAvailable,
     });
   });
 
@@ -910,7 +637,7 @@ function startFeedbackUI() {
       res.status(400).json({ error: "Missing context" });
       return;
     }
-    sessionManager.setAgentContext(sessionId, context);
+    sessionManager.setAgentContext(sessionId, context, "fyi");
 
     logEvent("info", "api.status.fyi", { sessionId, contextLength: context.length });
 
