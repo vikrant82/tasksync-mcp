@@ -475,15 +475,16 @@ ${FEEDBACK_HTML_ENHANCED_STYLES}
              </select>
            </label>
            <label>Auto-prune after:
-             <select id="disconnect-after" aria-label="Auto-prune inactive sessions after">
-               <option value="5">5 min</option>
-               <option value="10">10 min</option>
-               <option value="20" selected>20 min</option>
-               <option value="30">30 min</option>
-               <option value="60">1 hour</option>
-               <option value="120">2 hours</option>
-               <option value="1440">24 hours</option>
-             </select>
+              <select id="disconnect-after" aria-label="Auto-prune inactive sessions after">
+                <option value="0" selected>Never</option>
+                <option value="5">5 min</option>
+                <option value="10">10 min</option>
+                <option value="20">20 min</option>
+                <option value="30">30 min</option>
+                <option value="60">1 hour</option>
+                <option value="120">2 hours</option>
+                <option value="1440">24 hours</option>
+              </select>
            </label>
            <button type="button" class="theme-toggle" id="theme-toggle" aria-label="Toggle light/dark theme">
              <span id="theme-icon">&#9790;</span> <span id="theme-label">Light</span>
@@ -1170,9 +1171,9 @@ ${FEEDBACK_HTML_COMPOSER_HISTORY_SCRIPT}
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ minutes })
         });
-        if (res.ok) {
-          showStatus('Auto-prune timeout updated to ' + minutes + ' min', 'success');
-        } else {
+         if (res.ok) {
+           showStatus(minutes === 0 ? 'Auto-prune disabled (use Prune Stale for manual cleanup)' : 'Auto-prune timeout updated to ' + minutes + ' min', 'success');
+         } else {
           showStatus('Failed to update auto-prune timeout', 'error');
         }
       } catch (err) {
