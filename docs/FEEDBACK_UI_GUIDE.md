@@ -7,7 +7,8 @@ This guide explains how to use the TaskSync feedback page when multiple sessions
 - `Route Here`: Set the session this browser tab will send feedback to. Shows `Current` (disabled) when the session is already the active route target.
 - `Set Default`: Set the server fallback session used when no explicit session is provided.
 - `Rename`: Set a readable alias for a session row (does not change the real MCP session ID).
-- `Prune Stale`: Remove sessions that have been inactive for over 1 hour. Shows the stale count (e.g., `Prune Stale (3)`), disabled when no stale sessions exist.
+- `Prune Stale`: Remove sessions that have been inactive for over 30 minutes. Shows the stale count (e.g., `Prune Stale (3)`), disabled when no stale sessions exist.
+- `Auto prune after`: Settings dropdown controlling automatic session cleanup. Options: Never (default), 5/10/20/30/60/120/1440 minutes. When set to "Never", auto-prune is disabled and only manual "Prune Stale" is available.
 - `route-target`: Badge showing the session currently selected by this tab.
 - `waiting`: Session is currently blocked on `get_feedback` and can be unblocked by sending feedback.
 - `queued`: Feedback exists for that session and will be returned on its next `get_feedback` call.
@@ -28,7 +29,7 @@ Each session row shows:
 - **Session ID**: Shown below the name if an alias exists
 - **Metadata line**: Created time, last activity (relative), and wait duration when applicable
 - **Status chips**: `waiting`/`idle`, `queued`/`no-queue`, `route-target`, `stale`, `new wait`
-- **Stale dimming**: Sessions inactive for over 1 hour are visually dimmed (reduced opacity)
+- **Stale dimming**: Sessions inactive for over 30 minutes are visually dimmed (reduced opacity)
 
 ## Notification Modes
 

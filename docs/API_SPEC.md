@@ -38,7 +38,7 @@ Session semantics:
 - Client sends `mcp-session-id` on subsequent requests.
 - Temporary stream reconnects can recover while the server process remains alive.
 - Stale session IDs from before a server restart are still rejected; continuity is provided via fresh initialize plus reassociated persisted state.
-- Sessions inactive for >4 hours (and not currently waiting) are auto-pruned every 5 minutes.
+- Auto-prune is configurable via UI settings ("Auto prune after" dropdown, default: Never/disabled). When enabled, inactive sessions (not currently waiting) are pruned every minute.
 
 ## Feedback UI Endpoints
 
@@ -50,7 +50,7 @@ Session semantics:
 - `POST /sessions/default` body: `{ "sessionId": string }`
 - `POST /sessions/active` body: `{ "sessionId": string }` (legacy alias)
 - `POST /sessions/:sessionId/alias` body: `{ "alias": string }` (empty alias clears custom name)
-- `POST /sessions/prune` — removes sessions inactive for >1 hour
+- `POST /sessions/prune` — removes sessions inactive for >30 minutes
 - `DELETE /sessions/:sessionId`
 
 ## Plugin REST API

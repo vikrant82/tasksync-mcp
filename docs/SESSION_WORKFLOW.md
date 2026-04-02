@@ -21,7 +21,7 @@ Both types share the same feedback queue, waiter, and UI infrastructure.
 4. Server routes `get_feedback` and UI submissions by session id.
 5. If a stream drops temporarily, the client can reconnect while the server process remains alive.
 6. If the server restarts, the client must initialize again; preserved state is reassociated to the new live session.
-7. Sessions inactive for >4 hours (and not currently waiting) are automatically pruned every 5 minutes.
+7. Auto-prune is configurable via the UI settings ("Auto prune after" dropdown). Default is "Never" (disabled). When enabled, sessions inactive beyond the configured threshold (and not currently waiting) are pruned every minute. Manual prune via the "Prune Stale" button uses a 30-minute threshold.
 
 ## Plugin Session Lifecycle
 
@@ -30,7 +30,7 @@ Both types share the same feedback queue, waiter, and UI infrastructure.
 3. Request blocks until feedback is submitted via the web UI.
 4. Plugin receives feedback as JSON response.
 5. On `session.deleted` event, plugin calls `DELETE /sessions/:sessionId`.
-6. Same auto-prune rules apply.
+6. Same auto-prune rules apply (configurable, default disabled).
 
 ## Feedback Routing
 
