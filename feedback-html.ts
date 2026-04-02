@@ -456,7 +456,7 @@ ${FEEDBACK_HTML_ENHANCED_STYLES}
           <input id="active-session-input" placeholder="Session ID to set as default" />
           <button type="button" class="btn-secondary btn-small" onclick="setActiveFromInput()">Set Default</button>
           <button type="button" class="btn-secondary btn-small" onclick="loadSessions()">Refresh</button>
-          <button type="button" class="btn-secondary btn-small" onclick="pruneStaleSessions()" id="prune-stale-btn" title="Remove sessions inactive for over 1 hour">Prune Stale</button>
+           <button type="button" class="btn-secondary btn-small" onclick="pruneStaleSessions()" id="prune-stale-btn" title="Remove sessions inactive for over 30 minutes">Prune Stale</button>
         </div>
         <label for="session-filter" class="sr-only" style="position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);border:0;">Filter sessions</label>
         <input id="session-filter" class="session-filter" placeholder="Filter sessions..." type="search" />
@@ -600,9 +600,9 @@ ${FEEDBACK_HTML_COMPOSER_HISTORY_SCRIPT}
     const routeFlag = isRoute
       ? '<span class="flag flag-route">route-target</span>'
       : '';
-    const staleThreshold = 60 * 60 * 1000;
+    const staleThreshold = 30 * 60 * 1000;
     const isStale = !s.waitingForFeedback && s.lastActivityAt && (Date.now() - new Date(s.lastActivityAt).getTime()) > staleThreshold;
-    const staleFlag = isStale ? '<span class="flag flag-stale" title="No activity for over 1 hour">stale</span>' : '';
+    const staleFlag = isStale ? '<span class="flag flag-stale" title="No activity for over 30 minutes">stale</span>' : '';
     const remoteFlag = s.remoteEnabled ? '<span class="flag flag-remote" title="Remote notifications enabled">remote</span>' : '';
     const sessionUrl = s.sessionUrl || ('/session/' + encodeURIComponent(s.sessionId));
     const metaCreated = s.createdAt ? formatTimeShort(new Date(s.createdAt)) : '';
@@ -642,7 +642,7 @@ ${FEEDBACK_HTML_COMPOSER_HISTORY_SCRIPT}
       updatePruneButton(0);
       return;
     }
-    const staleThreshold = 60 * 60 * 1000;
+    const staleThreshold = 30 * 60 * 1000;
     const staleCount = sessions.filter(function(s) { return !s.waitingForFeedback && s.lastActivityAt && (Date.now() - new Date(s.lastActivityAt).getTime()) > staleThreshold; }).length;
     updatePruneButton(staleCount);
     const html = sessions.map((s) => renderSessionItem(s, active, filterText)).filter(Boolean).join('');
@@ -874,8 +874,8 @@ ${FEEDBACK_HTML_COMPOSER_HISTORY_SCRIPT}
 
   // ── Prune stale sessions ──
   async function pruneStaleSessions() {
-    const maxAgeMs = 60 * 60 * 1000;
-    if (!confirm('Remove all sessions inactive for over 1 hour?')) return;
+    const maxAgeMs = 30 * 60 * 1000;
+    if (!confirm('Remove all sessions inactive for over 30 minutes?')) return;
     try {
       const res = await fetch('/sessions/prune', {
         method: 'POST',
