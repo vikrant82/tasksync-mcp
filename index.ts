@@ -320,6 +320,7 @@ function buildUiStatePayload(targetSessionId?: string) {
     sessions,
     channelsAvailable: channelManager?.hasChannels ?? false,
     agentContext: state?.agentContext || null,
+    agentContextSource: state?.agentContextSource || null,
   };
 }
 
@@ -778,6 +779,7 @@ function startFeedbackUI() {
       defaultUiSessionId: payload.activeUiSessionId,
       activeUiSessionId: payload.activeUiSessionId,
       sessions: payload.sessions,
+      channelsAvailable: payload.channelsAvailable,
     });
   });
 
@@ -910,7 +912,7 @@ function startFeedbackUI() {
       res.status(400).json({ error: "Missing context" });
       return;
     }
-    sessionManager.setAgentContext(sessionId, context);
+    sessionManager.setAgentContext(sessionId, context, "fyi");
 
     logEvent("info", "api.status.fyi", { sessionId, contextLength: context.length });
 

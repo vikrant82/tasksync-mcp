@@ -473,22 +473,28 @@ export const FEEDBACK_HTML_COMPOSER_HISTORY_SCRIPT = `
   let agentContextCollapsed = localStorage.getItem(STORAGE_AGENT_CONTEXT_COLLAPSED) === '1';
   showAgentContextEl.checked = localStorage.getItem(STORAGE_SHOW_AGENT_CONTEXT) === '1';
   let lastAgentContext = null;
+  let lastAgentContextSource = null;
+  const agentContextHeadingEl = document.getElementById('agent-context-heading');
 
-  function updateAgentContextPanel(context) {
+  function updateAgentContextPanel(context, source) {
     lastAgentContext = context;
+    lastAgentContextSource = source;
     const show = showAgentContextEl.checked && context;
     agentContextPanelEl.style.display = show ? '' : 'none';
     if (show) {
-      agentContextContentEl.textContent = context;
+      agentContextContentEl.innerHTML = renderMarkdownContent(context);
       agentContextContentEl.classList.toggle('collapsed', agentContextCollapsed);
       agentContextToggleEl.textContent = agentContextCollapsed ? 'Expand' : 'Collapse';
       agentContextToggleEl.setAttribute('aria-expanded', String(!agentContextCollapsed));
+      if (agentContextHeadingEl) {
+        agentContextHeadingEl.textContent = source === 'fyi' ? 'Agent status update' : 'Last assistant message';
+      }
     }
   }
 
   showAgentContextEl.addEventListener('change', () => {
     localStorage.setItem(STORAGE_SHOW_AGENT_CONTEXT, showAgentContextEl.checked ? '1' : '0');
-    updateAgentContextPanel(lastAgentContext);
+    updateAgentContextPanel(lastAgentContext, lastAgentContextSource);
   });
 
   agentContextToggleEl.addEventListener('click', () => {
