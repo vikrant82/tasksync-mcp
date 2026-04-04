@@ -138,16 +138,17 @@ The `"full"` style is recommended for models that need explicit instructions. Us
 ## How It Works
 
 ```
-OpenCode Agent  ──get_feedback──►  Plugin  ──GET /api/stream/:sessionId──►  TaskSync Server
-                                                                                  │
-                                                                           SSE stream with
-                                                                           30s keepalives
-                                                                                  │
+OpenCode Agent  ──get_feedback──►  Plugin  ──POST /api/context/:sessionId──►  TaskSync Server
+                                           ──GET /api/stream/:sessionId───►        │
+                                                                            SSE stream with
+                                                                            30s keepalives
+                                                                                   │
 OpenCode Agent  ◄──feedback text──  Plugin  ◄──event: feedback───────────  TaskSync Server
 ```
 
 1. Agent calls `get_feedback` (native OpenCode tool, no MCP prefix)
-2. Plugin opens an SSE stream to `GET /api/stream/:sessionId`
+2. Plugin sends the agent's last message via `POST /api/context/:sessionId` (JSON body, no size limits)
+3. Plugin opens an SSE stream to `GET /api/stream/:sessionId`
 3. Server sends keepalive comments every 30 seconds to prevent idle timeouts
 4. When you submit feedback in the web UI, the server sends it as an SSE `feedback` event
 5. Plugin returns your feedback text to the agent
@@ -172,7 +173,7 @@ When remote mode is enabled for a session, the plugin captures the agent's most 
 **How it works:**
 
 1. The plugin's `experimental.text.complete` hook captures the assistant's text as it finishes streaming (before tool execution in the same step)
-2. When `get_feedback` opens an SSE stream, the captured text is sent as a base64-encoded `X-Agent-Context` header
+2. When `get_feedback` is called, the captured text is sent to the server via `POST /api/context/:sessionId` before opening the SSE stream
 3. If the session has remote mode enabled and a Telegram bot is configured, the server sends a notification with the agent's context and quick-reply buttons
 4. You can reply via Telegram (text or button tap) — the feedback is delivered to the waiting agent
 

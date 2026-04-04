@@ -41,10 +41,24 @@ Updated: 2026-03-31
 - Updated docs: SESSION_WORKFLOW.md, API_SPEC.md, FEEDBACK_UI_GUIDE.md.
 - Removed dead duplicate constants (`MIN_DISCONNECT_AFTER_MINUTES`, `MAX_DISCONNECT_AFTER_MINUTES`) from index.ts.
 
+## Completed: Source Restructuring (April 2026, PR #8)
+- All source moved to `src/`, UI templates to `src/ui/` with shorter names
+- Extracted `src/logging.ts` (logging infra + debug HTTP middleware) and `src/utils.ts` (pure helpers) from monolithic index.ts
+- Dead code removed: `lib.ts`, `path-utils.ts`, `path-validation.ts`, `roots-utils.ts`, `__tests__/`, `jest.config.cjs` + unused deps
+- Build config updated: `tsconfig.json` rootDir → `src/`, cleaned package.json
+- No API/behavior changes — fully backward compatible
+- Released as Server v1.3.0 (bundled with agent context markdown + bug fixes from same branch)
+
+## Completed: Agent Context Markdown + Bug Fixes (April 2026, PR #8)
+- Agent context panel now renders markdown (was plain text)
+- Source-specific headings: "Agent status update" (FYI) vs "Last assistant message" (assistant)
+- Bug fix: remote toggle button disappeared after click (`/sessions` GET missing `channelsAvailable`)
+- Bug fix: CSS pulse animation CPU burn → GPU-composited opacity animation
+- Telegram feedback replies now show session alias
+
 ## Next Up
-- Stabilization: test all features end-to-end (especially agent context UI panel, Telegram alias, auto-prune)
-- Project restructure: source files at root need logical grouping (src/, channels/, etc.)
-- Merge PR #7 and release after testing
+- Stabilization: end-to-end testing of all features
+- Consider further index.ts extraction (alias-manager, feedback-handler, mcp-server split)
 
 ## Completed: Native Image Injection (March 2026, PR #4)
 - Root-caused Layer 2 failure: `fromPlugin()` discards callback metadata, `experimental.chat.messages.transform` never saw `imageRef`
