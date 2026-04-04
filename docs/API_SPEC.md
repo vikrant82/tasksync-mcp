@@ -95,6 +95,38 @@ Behavior:
 - Client abort (e.g., `AbortController.abort()`) cancels the wait cleanly
 - No keepalive needed (designed for localhost use)
 
+### `POST /api/context/:sessionId`
+
+Send agent context (assistant's last message) for display in the UI and remote notifications.
+
+Request body:
+```json
+{ "context": "The agent's latest response text..." }
+```
+
+Response:
+```json
+{ "ok": true }
+```
+
+Called by the plugin before opening the SSE stream to deliver agent context without HTTP header size limits.
+
+### `GET /api/stream/:sessionId`
+
+SSE stream for receiving feedback. The plugin connects here after sending context via `POST /api/context/:sessionId`.
+
+Auto-registers the session if it doesn't exist.
+
+SSE events:
+- `event: feedback` — `{ "type": "feedback", "content": "...", "images": [...] }`
+- `event: closed` — `{ "type": "closed", "reason": "..." }`
+- `event: error` — `{ "type": "error", "message": "..." }`
+- SSE comments (`: keepalive`) every 30 seconds to prevent idle timeouts
+
+### `POST /api/status/:sessionId`
+
+Send FYI status notification to remote channels (Telegram). Only works when remote mode is enabled for the session.
+
 `GET /sessions` response fields per session include:
 - `sessionId`: canonical MCP session ID (human-readable, e.g., `opencode-1`)
 - `alias`: optional display label (manual alias or inferred initialize metadata)

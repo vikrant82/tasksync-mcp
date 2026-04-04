@@ -645,6 +645,22 @@ function startFeedbackUI() {
     res.json({ ok: true, sessionId });
   });
 
+  feedbackApp.post("/api/context/:sessionId", (req, res) => {
+    const sessionId = req.params.sessionId;
+    if (!sessionId || !hasSession(sessionId)) {
+      res.status(404).json({ error: "Session not found" });
+      return;
+    }
+    const context = typeof req.body?.context === "string" ? req.body.context : "";
+    if (!context) {
+      res.status(400).json({ error: "Missing context" });
+      return;
+    }
+    sessionManager.setAgentContext(sessionId, context, "assistant");
+    logEvent("info", "api.context.set", { sessionId, contextLength: context.length });
+    res.json({ ok: true });
+  });
+
   feedbackApp.post("/feedback", async (req, res) => {
     try {
       const content = typeof req.body === "string" ? req.body : req.body.content ?? "";
@@ -773,20 +789,10 @@ function startFeedbackUI() {
 
     logEvent("info", "api.stream.started", { sessionId, waitId });
 
-    // Capture agent context from plugin header (base64-encoded to handle newlines in HTTP headers)
-    const rawAgentContext = typeof req.headers["x-agent-context"] === "string"
-      ? req.headers["x-agent-context"]
-      : null;
-    const agentContext = rawAgentContext
-      ? Buffer.from(rawAgentContext, "base64").toString("utf-8")
-      : null;
-    if (agentContext) {
-      sessionManager.setAgentContext(sessionId, agentContext);
-    }
-
     // Trigger remote notification if remote mode is enabled for this session
+    // Agent context is set via POST /api/context/:sessionId before the SSE stream opens
     if (sessionManager.isRemoteEnabled(sessionId) && channelManager?.hasChannels) {
-      const context = agentContext || sessionManager.getAgentContext(sessionId);
+      const context = sessionManager.getAgentContext(sessionId);
       channelManager.notify({
         sessionId,
         sessionAlias: sessionManager.getSessionAlias(sessionId),

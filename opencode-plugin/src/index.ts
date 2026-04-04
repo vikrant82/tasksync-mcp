@@ -244,13 +244,24 @@ async function connectAndWait(
     fyiTimers.delete(sessionId);
   }
 
+  // Send agent context via POST body (avoids HTTP header size limits)
+  if (agentContextBySession.has(sessionId)) {
+    try {
+      await fetch(`${serverUrl}/api/context/${sessionId}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ context: agentContextBySession.get(sessionId)! }),
+        signal: context.abort,
+      });
+    } catch {
+      // Non-fatal: context is for display/notifications only
+    }
+  }
+
   const resp = await fetch(`${serverUrl}/api/stream/${sessionId}`, {
     signal: context.abort,
     headers: {
       Accept: "text/event-stream",
-      ...(agentContextBySession.has(sessionId) && {
-        "X-Agent-Context": Buffer.from(agentContextBySession.get(sessionId)!).toString("base64"),
-      }),
     },
   });
 
