@@ -1,7 +1,7 @@
 {
   "name": "opencode-tasksync",
-  "version": "1.2.0",
-  "description": "OpenCode plugin for TaskSync — persistent daemon feedback loop for AI coding agents",
+  "version": "1.2.1",
+  "description": "OpenCode plugin for TaskSync \u2014 persistent daemon feedback loop for AI coding agents",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
