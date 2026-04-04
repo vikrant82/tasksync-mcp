@@ -5,10 +5,11 @@ Updated: 2026-04-02
 ## Architecture / Project Structure
 - [x] Extract SessionManager from index.ts
 - [x] OpenCode plugin (detached server architecture)
-- [ ] **Project restructure** — source files at root need logical grouping (src/, channels/, etc.)
-- [ ] Extract logging.ts (logEvent, debug logging, file logging)
-- [ ] Extract alias-manager.ts (slugify, generation counter, alias CRUD)
-- [ ] Extract feedback-handler.ts (waiter management, formatFeedbackResponse)
+- [x] **Project restructure** — all source under `src/`, UI under `src/ui/`
+- [x] Extract logging.ts (logEvent, debug logging, file logging)
+- [x] Extract utils.ts (formatFeedbackResponse, normalizeAlias, slugify, inferAlias)
+- [ ] Extract alias-manager.ts (generation counter, alias CRUD from session-manager)
+- [ ] Extract feedback-handler.ts (waiter management from index.ts)
 - [ ] Split index.ts into mcp-server.ts + ui-server.ts
 - [ ] Extract channels.ts could move to channels/ directory with per-channel files
 

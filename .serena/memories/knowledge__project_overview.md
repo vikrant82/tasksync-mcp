@@ -41,11 +41,25 @@ Updated 2026-04-02.
 ## Stack
 TypeScript, Node.js, Express, `@modelcontextprotocol/sdk`, grammY v1.41.1, `@grammyjs/runner` v2.0.3, Jest/ts-jest
 
+## File Structure
+All source under `src/`:
+- `src/index.ts` — Main server (~1160 lines): MCP transport, UI server, REST API
+- `src/session-manager.ts` — Session lifecycle, feedback state, aliases, auto-prune
+- `src/session-state-store.ts` — File-backed persistence (`.tasksync/session-state.json`)
+- `src/channels.ts` — Remote notification channels (ChannelManager, TelegramChannel)
+- `src/stream-event-store.ts` — MCP-specific transient SSE replay
+- `src/logging.ts` — Logging infrastructure + debug HTTP middleware
+- `src/utils.ts` — Pure helpers (alias normalization, slug, response formatting)
+- `src/ui/feedback-html.ts` — Main feedback UI HTML template
+- `src/ui/styles.ts` — Enhanced CSS styles
+- `src/ui/scripts.ts` — UI JavaScript (composer, history, sessions)
+- `src/ui/markdown.ts` — Client-side markdown renderer
+- `src/feedback-server.ts` — Standalone feedback web UI (alternative entry)
+
 ## Versions
-- Server: `tasksync-mcp-http` — latest v1.1.3 (npm)
+- Server: `tasksync-mcp-http` — latest v1.3.0 (npm)
 - Plugin: `opencode-tasksync` — latest v1.2.0 (npm)
 - GitHub: `vikrant82/tasksync-mcp`
 
 ## Branches
-- `main` — all work merged
-- Open PR #7: `feat/telegram-alias-agent-context-ui` (session alias in Telegram + agent context UI panel)
+- `main` — all work merged (PR #7 session alias + agent context + auto-prune, PR #8 restructuring)
