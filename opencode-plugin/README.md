@@ -8,7 +8,7 @@ Your agents call `get_feedback`, you reply via the web UI or Telegram, they keep
 
 - **`get_feedback` tool** — Blocks until you submit feedback via the TaskSync web UI or Telegram
 - **`daemon` agent** — Pre-configured agent that maintains a continuous work → feedback → work loop
-- **Agent augmentation** — Inject the feedback loop into your existing agents (`coder`, `ask`, `build`) with one config line
+- **Agent augmentation** — Inject the feedback loop into your existing agents (`ask`, `build`, `plan`, `general`, or `*`) with one config line
 - **Unbreakable connections** — SSE with keepalives + automatic reconnection through server restarts and network blips (1s → 15s exponential backoff). The agent never sees transient errors.
 - **Native images** — Attached images injected directly into the LLM conversation via `tool.execute.after` hook. No temp files.
 - **Remote mode** — Get Telegram notifications with the agent's context when it's waiting. Quick-reply buttons or free-text responses, delivered straight back to the agent.
@@ -51,10 +51,12 @@ Create `~/.tasksync/config.json` (global) or `.tasksync/config.json` (project):
 | Setting | Default | Description |
 |---------|---------|-------------|
 | `serverUrl` | `http://localhost:3456` | TaskSync server URL |
-| `augmentAgents` | `[]` | Agents to augment with feedback loop (`["*"]` for all) |
+| `augmentAgents` | `[]` | Agents to augment with feedback loop (`["*"]` or `"*"` for wildcard) |
 | `overlayStyle` | `"full"` | Overlay detail: `"full"` (120 lines) or `"compact"` (50 lines) |
 
-Environment overrides: `TASKSYNC_SERVER_URL`, `TASKSYNC_AUGMENT_AGENTS` (comma-separated), `TASKSYNC_OVERLAY_STYLE`.
+`augmentAgents` accepts either array form (e.g., `["ask", "build"]`) or string form (e.g., `"ask,build"` or `"*"`).
+
+Environment overrides: `TASKSYNC_SERVER_URL`, `TASKSYNC_AUGMENT_AGENTS` (comma-separated, e.g. `ask,build,plan,general` or `*`), `TASKSYNC_OVERLAY_STYLE`.
 
 ## How It Works
 
@@ -63,6 +65,8 @@ Environment overrides: `TASKSYNC_SERVER_URL`, `TASKSYNC_AUGMENT_AGENTS` (comma-s
 3. **Native image injection** — The `tool.execute.after` hook injects feedback images as `FilePart` attachments on the tool result, so the LLM sees them directly.
 4. **FYI timer** — If the agent writes text but doesn't call `get_feedback` within 30 seconds, a status update is sent to your notification channels.
 5. **Config injection** — The plugin adds a `daemon` agent and optionally augments existing agents with the feedback loop protocol.
+
+For augmented agents, the overlay is appended at runtime (via `experimental.chat.system.transform`) so built-in OpenCode prompts are preserved.
 
 ## Local Development
 

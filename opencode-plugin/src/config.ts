@@ -10,7 +10,7 @@ export interface TaskSyncPluginConfig {
    * - `[]` (default) — no augmentation, only the dedicated `daemon` agent gets the loop
    * - `["coder"]` — augment only the `coder` agent
    * - `["coder", "ask"]` — augment specific agents
-   * - `["*"]` — augment ALL agents (except the dedicated `daemon` agent)
+   * - `["*"]` or `"*"` — augment ALL agents (except the dedicated `daemon` agent)
    */
   augmentAgents: string[];
   /**
@@ -26,6 +26,34 @@ const DEFAULTS: TaskSyncPluginConfig = {
   augmentAgents: [],
   overlayStyle: "full",
 };
+
+/**
+ * Normalize augmentAgents from either an array or comma-separated string.
+ *
+ * Accepted examples:
+ * - ["ask", "build"]
+ * - ["*"]
+ * - "ask,build"
+ * - "*"
+ */
+function parseAugmentAgents(raw: unknown): string[] | undefined {
+  const values =
+    Array.isArray(raw)
+      ? raw.filter((a): a is string => typeof a === "string")
+      : typeof raw === "string"
+        ? raw.split(",")
+        : undefined;
+
+  if (!values) return undefined;
+
+  return Array.from(
+    new Set(
+      values
+        .map((value) => value.trim())
+        .filter((value) => value.length > 0),
+    ),
+  );
+}
 
 /**
  * Try to read a JSON config file and return its contents.
@@ -50,8 +78,9 @@ function readConfigFile(filePath: string): Record<string, unknown> | null {
  */
 function applySettings(config: TaskSyncPluginConfig, settings: Record<string, unknown>): void {
   if (typeof settings.serverUrl === "string") config.serverUrl = settings.serverUrl;
-  if (Array.isArray(settings.augmentAgents)) {
-    config.augmentAgents = settings.augmentAgents.filter((a): a is string => typeof a === "string");
+  const parsedAugmentAgents = parseAugmentAgents(settings.augmentAgents);
+  if (parsedAugmentAgents) {
+    config.augmentAgents = parsedAugmentAgents;
   }
   if (typeof settings.overlayStyle === "string" && ["full", "compact"].includes(settings.overlayStyle)) {
     config.overlayStyle = settings.overlayStyle as TaskSyncPluginConfig["overlayStyle"];
@@ -93,10 +122,7 @@ export function loadConfig(projectDir: string): TaskSyncPluginConfig {
 
   const envAugment = process.env.TASKSYNC_AUGMENT_AGENTS;
   if (envAugment !== undefined) {
-    config.augmentAgents = envAugment
-      .split(",")
-      .map((s) => s.trim())
-      .filter(Boolean);
+    config.augmentAgents = parseAugmentAgents(envAugment) ?? [];
   }
 
   const envOverlay = process.env.TASKSYNC_OVERLAY_STYLE;

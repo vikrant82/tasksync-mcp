@@ -18,6 +18,12 @@ interface ImageAttachment {
 const pendingImages = new Map<string, ImageAttachment[]>();
 
 /**
+ * Tracks the active user-selected agent per session.
+ * Used to apply daemon overlay at runtime without replacing built-in prompts.
+ */
+const activeAgentBySession = new Map<string, string>();
+
+/**
  * Module-level cache for the most recent assistant text per session.
  * Updated reactively via message.part.updated events. Sent to server
  * as X-Agent-Context header on SSE connections for remote notifications.
@@ -40,9 +46,18 @@ const BACKOFF_MULTIPLIER = 2;
 // Reasons that indicate the session is permanently gone — don't retry
 const NON_RETRYABLE_REASONS = new Set(["session_deleted", "session_pruned"]);
 
+// Built-in OpenCode agent names we can safely target when wildcard augmentation
+// is enabled, even if they are not explicitly defined in cfg.agent yet.
+const KNOWN_BUILT_IN_AGENTS = ["ask", "build", "plan", "general"] as const;
+
 const plugin: Plugin = async ({ directory }) => {
   const config = loadConfig(directory);
   const serverUrl = config.serverUrl.replace(/\/+$/, "");
+  const overlay =
+    config.overlayStyle === "compact" ? DAEMON_OVERLAY_COMPACT : DAEMON_OVERLAY_FULL;
+  const wildcardEnabled = config.augmentAgents.includes("*");
+  const shouldAugmentAgent = (name: string | undefined) =>
+    !!name && name !== "daemon" && (wildcardEnabled || config.augmentAgents.includes(name));
 
   const getFeedback = tool({
     description:
@@ -164,13 +179,57 @@ const plugin: Plugin = async ({ directory }) => {
       }
     },
 
+    // Track the selected agent for this session so we can inject daemon overlay
+    // during system-prompt assembly without mutating agent.prompt in config.
+    "chat.message": async (
+      input: { sessionID: string; agent?: string },
+      _output: { message: unknown; parts: unknown[] },
+    ) => {
+      if (typeof input.agent === "string" && input.agent.length > 0) {
+        activeAgentBySession.set(input.sessionID, input.agent);
+      }
+    },
+
+    // Append daemon overlay at runtime for targeted agents.
+    // This preserves built-in prompts because OpenCode treats agent.prompt as
+    // an override, not an append.
+    "experimental.chat.system.transform": async (
+      input: { sessionID?: string },
+      output: { system: string[] },
+    ) => {
+      if (config.augmentAgents.length === 0) return;
+      if (!input.sessionID) return;
+
+      const activeAgent = activeAgentBySession.get(input.sessionID);
+      if (!shouldAugmentAgent(activeAgent)) return;
+      if (output.system.includes(overlay)) return;
+
+      output.system.push(overlay);
+    },
+
     event: async ({ event }) => {
+      if (event.type === "message.updated") {
+        const info = (event as {
+          properties?: { info?: { role?: string; sessionID?: string; agent?: string } };
+        }).properties?.info;
+
+        if (
+          info?.role === "user" &&
+          typeof info.sessionID === "string" &&
+          typeof info.agent === "string" &&
+          info.agent.length > 0
+        ) {
+          activeAgentBySession.set(info.sessionID, info.agent);
+        }
+      }
+
       if (event.type === "session.deleted") {
         const sessionInfo = (event as { properties?: { info?: { id?: string } } }).properties?.info;
         if (sessionInfo?.id) {
           fetch(`${serverUrl}/sessions/${sessionInfo.id}`, { method: "DELETE" }).catch(() => {});
           pendingImages.delete(sessionInfo.id);
           agentContextBySession.delete(sessionInfo.id);
+          activeAgentBySession.delete(sessionInfo.id);
           const fyiTimer = fyiTimers.get(sessionInfo.id);
           if (fyiTimer) {
             clearTimeout(fyiTimer);
@@ -192,28 +251,30 @@ const plugin: Plugin = async ({ directory }) => {
 
       // Layer 3: Optional augmentation of other agents
       if (config.augmentAgents.length > 0) {
-        const overlay =
-          config.overlayStyle === "compact" ? DAEMON_OVERLAY_COMPACT : DAEMON_OVERLAY_FULL;
-        const shouldAugment = (name: string) =>
-          config.augmentAgents.includes("*") || config.augmentAgents.includes(name);
-
         for (const [name, agent] of Object.entries(cfg.agent)) {
           if (name === "daemon") continue;
-          if (!shouldAugment(name)) continue;
+          if (!shouldAugmentAgent(name)) continue;
           if (!agent) continue;
 
-          agent.prompt = (agent.prompt || "") + "\n\n" + overlay;
           agent.tools = { ...agent.tools, get_feedback: true };
         }
 
-        // For agents in augmentAgents list that aren't in config yet (built-in agents),
-        // create partial config entries so the tool gets added
-        for (const name of config.augmentAgents) {
-          if (name === "*" || name === "daemon") continue;
+        // For requested agents not present in cfg.agent yet, create partial config
+        // entries so get_feedback is enabled. Under wildcard, also seed known
+        // built-ins to make "*" behave predictably.
+        const requestedTargets = Array.from(
+          new Set(
+            wildcardEnabled
+              ? [...KNOWN_BUILT_IN_AGENTS, ...config.augmentAgents.filter((name) => name !== "*")]
+              : config.augmentAgents,
+          ),
+        );
+
+        for (const name of requestedTargets) {
+          if (name === "daemon") continue;
           if (cfg.agent[name]) continue; // already processed above
 
           cfg.agent[name] = {
-            prompt: overlay,
             tools: { get_feedback: true },
           };
         }
