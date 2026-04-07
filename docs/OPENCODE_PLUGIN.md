@@ -9,7 +9,7 @@ With MCP, you get a `tasksync_get_feedback` tool, but your agents don't know to 
 The plugin solves this automatically:
 
 - **Injects a `daemon` agent** with the complete feedback loop protocol — switch to it and it works.
-- **Augments your existing agents** (`ask`, `build`, `plan`, or `*` for all) so they gain feedback loop behavior without any prompt editing. Your coder starts calling `get_feedback` between tasks.
+- **Augments your existing agents** (`ask`, `build`, `plan`, `general`, or `*` for all) so they gain feedback loop behavior without any prompt editing. Your coder starts calling `get_feedback` between tasks.
 - **Native lifecycle** — responds to OpenCode session events, handles cleanup, integrates with the config system idiomatically.
 
 ## Prerequisites
@@ -75,6 +75,13 @@ Create `~/.tasksync/config.json` (global) or `.tasksync/config.json` (project-le
 | `augmentAgents` | `[]` | Which agents to augment with feedback loop |
 | `overlayStyle` | `"full"` | Overlay style for augmented agents |
 
+`augmentAgents` accepts either an array or a string:
+
+- Array form: `["ask", "build"]`
+- Wildcard array: `["*"]`
+- String form: `"ask,build"`
+- Wildcard string: `"*"`
+
 ### Precedence
 
 Configuration is merged with this priority (highest wins):
@@ -89,7 +96,7 @@ Configuration is merged with this priority (highest wins):
 | Variable | Maps to | Example |
 |----------|---------|---------|
 | `TASKSYNC_SERVER_URL` | `serverUrl` | `http://localhost:3456` |
-| `TASKSYNC_AUGMENT_AGENTS` | `augmentAgents` | `ask,build,plan` or `*` |
+| `TASKSYNC_AUGMENT_AGENTS` | `augmentAgents` | `ask,build,plan,general` or `*` |
 | `TASKSYNC_OVERLAY_STYLE` | `overlayStyle` | `full` or `compact` |
 
 ## Agent Behavior
@@ -109,6 +116,10 @@ Use it by selecting the `daemon` agent in OpenCode.
 
 You can inject the feedback loop into existing agents (like `coder`, `ask`, `build`) so they also participate in the feedback loop.
 
+Implementation note: the plugin appends the daemon overlay at runtime via OpenCode's
+`experimental.chat.system.transform` hook. This preserves each agent's built-in
+system prompt because OpenCode treats `agent.prompt` as an override.
+
 **Examples:**
 
 ```json
@@ -122,7 +133,7 @@ You can inject the feedback loop into existing agents (like `coder`, `ask`, `bui
 | `[]` | No augmentation (only `daemon` agent has the loop) |
 | `["ask", "build"]` | Augment specific agents |
 | `["ask", "build", "plan"]` | Augment multiple agents |
-| `["*"]` | Augment ALL agents (except `daemon`) |
+| `["*"]` or `"*"` | Augment all configured agents, plus known built-ins (`ask`, `build`, `plan`, `general`), except `daemon` |
 
 ### Overlay Styles
 
