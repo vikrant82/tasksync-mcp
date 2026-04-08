@@ -1,4 +1,4 @@
-Updated 2026-04-02.
+Updated 2026-04-08.
 
 ## Two Integration Paths
 
@@ -54,9 +54,13 @@ Runtime centered in `index.ts` with two Express apps:
 - `connectAndWait()`: single SSE connection attempt, returns discriminated union `{ retry: true/false }`
 - Retry loop in `execute()`: exponential backoff (1s → 2s → 4s → 8s → 15s cap), only `context.abort` terminates
 - `NON_RETRYABLE_REASONS`: `session_deleted`, `session_pruned` — permanent closes that stop retry
-- Config hook: always injects `daemon` agent + optional augmentation of other agents
+- Config hook: always injects `daemon` agent; augmented agents get `get_feedback` tool only (no prompt mutation)
+- Agent augmentation: daemon overlay appended at runtime via `experimental.chat.system.transform` hook — preserves built-in agent prompts (OpenCode treats `agent.prompt` as a full override, not append)
+- `activeAgentBySession` Map tracks which agent is active per session (set by `chat.message` hook, which fires before `system.transform`)
+- `shouldAugmentAgent()` / `wildcardEnabled`: determines if overlay should apply; `KNOWN_BUILT_IN_AGENTS` (`ask`, `build`, `plan`, `general`) auto-included under wildcard `"*"`
+- `augmentAgents` config: accepts array (`["ask", "build"]`) or comma-separated string (`"ask,build"` or `"*"`), parsed via `parseAugmentAgents()`
 - `tool.execute.after` hook: injects images as native `FilePart` attachments with PartBase fields
-- Event hook: cleans up on `session.deleted`
+- Event hook: cleans up on `session.deleted` (includes `activeAgentBySession` cleanup)
 - Config from `.tasksync/config.json` (global `~/.tasksync/` → project `.tasksync/` → env vars)
 - OpenCode rejects unknown keys in `opencode.json`, so config uses dedicated files
 
@@ -72,14 +76,14 @@ Persistence layer (`SessionStateStore` → `.tasksync/session-state.json`) enabl
 
 ### Not preserved (runtime-only):
 - `pendingWaiter: null` — live Promise resolvers can't survive restart
-- `agentContext: null` — BUT plugin re-sends via `X-Agent-Context` header on reconnect
+- `agentContext: null` — BUT plugin re-sends via `POST /api/context/:sessionId` on reconnect
 - In-memory `sessions` Map entries (require live transport)
 
 ### Plugin Recovery Flow:
 1. Server dies → plugin's `reader.read()` throws → retry loop: exponential backoff 1s→2s→4s→8s→15s cap
 2. Server restarts → `SessionManager.initialize()` → `hydrateFromStore()` restores persisted state
 3. Plugin reconnects → `GET /api/stream/:sessionId` → auto-registers session → `setWaiter()`
-4. Plugin sends `X-Agent-Context` header → context restored immediately
+4. Plugin sends agent context via `POST /api/context/:sessionId` → context restored immediately
 5. If remote enabled → Telegram notification re-sent
 6. Observable: wait timer resets (new waiter start time), brief UI disconnection gap
 
@@ -107,7 +111,7 @@ Persistence layer (`SessionStateStore` → `.tasksync/session-state.json`) enabl
   - Inline keyboard: Approve/Reject/Continue quick-reply buttons
 - Config: `TASKSYNC_TELEGRAM_BOT_TOKEN` env / `--telegram-token` CLI arg
 - Server: `channelManager.notify()` triggered when waiter set + session has `remoteEnabled`
-- Plugin: `experimental.text.complete` hook caches agent text → sent as base64 `X-Agent-Context` header
+- Plugin: `experimental.text.complete` hook caches agent text → sent via `POST /api/context/:sessionId` (was previously base64 `X-Agent-Context` header, changed in v1.2.1)
 - Session state: `remoteEnabled` boolean (persisted), `agentContext` string (runtime)
 - `NotificationParams`/`FYIParams`: `sessionId`, `sessionAlias?`, `context` — no `feedbackUrl` (removed: localhost link unreachable from remote)
 - Telegram headers show session alias via `getSessionAlias()` fallback chain (manual → inferred → clientAlias → truncated ID)

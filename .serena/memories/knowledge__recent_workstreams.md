@@ -56,6 +56,18 @@ Updated: 2026-03-31
 - Bug fix: CSS pulse animation CPU burn → GPU-composited opacity animation
 - Telegram feedback replies now show session alias
 
+## Completed: Agent Context POST Migration (April 2026, PR #9)
+- Fixed HTTP 431 errors with large agent contexts by migrating from base64 `X-Agent-Context` header to `POST /api/context/:sessionId` with JSON body
+- Server v1.3.1, Plugin v1.2.1 — both must be updated together (breaking change)
+
+## Completed: Preserve Built-in Prompts During Augmentation (April 2026, PR #10)
+- Fixed: `augmentAgents` was replacing built-in agent prompts (OpenCode treats `agent.prompt` as full override)
+- Daemon overlay now appended at runtime via `experimental.chat.system.transform` hook — preserves built-in prompts
+- `activeAgentBySession` Map tracks agent per session (set by `chat.message` hook, fires before `system.transform`)
+- `augmentAgents` config now accepts string form (`"ask,build"` or `"*"`) in addition to arrays
+- Wildcard `"*"` auto-includes known built-ins (`ask`, `build`, `plan`, `general`)
+- Plugin v1.2.2 — no server update required
+
 ## Next Up
 - Stabilization: end-to-end testing of all features
 - Consider further index.ts extraction (alias-manager, feedback-handler, mcp-server split)
