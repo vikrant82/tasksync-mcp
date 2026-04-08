@@ -1,4 +1,11 @@
+import { createRequire } from "node:module";
 import type { ImageAttachment } from "./session-state-store.js";
+
+const require = createRequire(import.meta.url);
+const pkg = require("../package.json") as { version: string };
+
+export const SERVER_VERSION = pkg.version;
+export const GITHUB_URL = "https://github.com/vikrant82/tasksync-mcp";
 
 export function formatFeedbackResponse(content: string, images?: ImageAttachment[]): { content: ({ type: "text"; text: string } | { type: "image"; data: string; mimeType: string })[] } {
   const blocks: ({ type: "text"; text: string } | { type: "image"; data: string; mimeType: string })[] = [];

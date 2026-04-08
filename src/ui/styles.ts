@@ -317,4 +317,19 @@ export const FEEDBACK_HTML_ENHANCED_STYLES = `
     from { opacity: 0; }
     to { opacity: 1; }
   }
+  .app-footer {
+    text-align: center;
+    padding: 0.75rem 1rem;
+    font-size: 0.75rem;
+    color: #888;
+    border-top: 1px solid #eee;
+  }
+  .app-footer a { color: #888; text-decoration: none; }
+  .app-footer a:hover { text-decoration: underline; color: #555; }
+  .app-footer .version { opacity: 0.7; }
+  @media (prefers-color-scheme: dark) {
+    .app-footer { border-top-color: #333; color: #666; }
+    .app-footer a { color: #666; }
+    .app-footer a:hover { color: #999; }
+  }
 `;
