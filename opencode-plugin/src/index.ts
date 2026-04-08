@@ -1,9 +1,14 @@
+import { createRequire } from "node:module";
 import type { Plugin } from "@opencode-ai/plugin";
 import { tool } from "@opencode-ai/plugin";
 import { loadConfig } from "./config.js";
 import { DAEMON_AGENT_PROMPT } from "./daemon-prompt.js";
 import { DAEMON_OVERLAY_FULL } from "./daemon-overlay.js";
 import { DAEMON_OVERLAY_COMPACT } from "./daemon-overlay-compact.js";
+
+const require = createRequire(import.meta.url);
+const pkg = require("../package.json") as { version: string };
+const PLUGIN_VERSION = pkg.version;
 
 interface ImageAttachment {
   data: string;
@@ -22,6 +27,15 @@ const pendingImages = new Map<string, ImageAttachment[]>();
  * Used to apply daemon overlay at runtime without replacing built-in prompts.
  */
 const activeAgentBySession = new Map<string, string>();
+
+/**
+ * Tracks sessions whose OpenCode-generated title has been synced to the server.
+ * Prevents redundant alias updates on subsequent session.updated events.
+ */
+const syncedTitles = new Map<string, string>();
+
+// Matches OpenCode's default auto-generated session titles
+const DEFAULT_TITLE_RE = /^(New session|Child session) - \d{4}-\d{2}-\d{2}T/;
 
 /**
  * Module-level cache for the most recent assistant text per session.
@@ -53,6 +67,7 @@ const KNOWN_BUILT_IN_AGENTS = ["ask", "build", "plan", "general"] as const;
 const plugin: Plugin = async ({ directory }) => {
   const config = loadConfig(directory);
   const serverUrl = config.serverUrl.replace(/\/+$/, "");
+  console.error(`[tasksync] Plugin v${PLUGIN_VERSION} initialized (server: ${serverUrl}, augment: ${config.augmentAgents.length > 0 ? config.augmentAgents.join(",") : "none"})`);
   const overlay =
     config.overlayStyle === "compact" ? DAEMON_OVERLAY_COMPACT : DAEMON_OVERLAY_FULL;
   const wildcardEnabled = config.augmentAgents.includes("*");
@@ -223,6 +238,29 @@ const plugin: Plugin = async ({ directory }) => {
         }
       }
 
+      if (event.type === "session.updated") {
+        const props = (event as {
+          properties?: { sessionID?: string; info?: { id?: string; title?: string } };
+        }).properties;
+        const sessionId = props?.sessionID ?? props?.info?.id;
+        const title = props?.info?.title;
+
+        if (
+          sessionId &&
+          typeof title === "string" &&
+          title.length > 0 &&
+          !DEFAULT_TITLE_RE.test(title) &&
+          syncedTitles.get(sessionId) !== title
+        ) {
+          syncedTitles.set(sessionId, title);
+          fetch(`${serverUrl}/sessions/${sessionId}/title`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ title }),
+          }).catch(() => {});
+        }
+      }
+
       if (event.type === "session.deleted") {
         const sessionInfo = (event as { properties?: { info?: { id?: string } } }).properties?.info;
         if (sessionInfo?.id) {
@@ -230,6 +268,7 @@ const plugin: Plugin = async ({ directory }) => {
           pendingImages.delete(sessionInfo.id);
           agentContextBySession.delete(sessionInfo.id);
           activeAgentBySession.delete(sessionInfo.id);
+          syncedTitles.delete(sessionInfo.id);
           const fyiTimer = fyiTimers.get(sessionInfo.id);
           if (fyiTimer) {
             clearTimeout(fyiTimer);

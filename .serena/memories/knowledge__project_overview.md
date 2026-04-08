@@ -1,4 +1,4 @@
-Updated 2026-04-02.
+Updated 2026-04-08.
 
 `tasksync-mcp` provides iterative human feedback loops for coding agents through the `get_feedback` tool.
 
@@ -57,9 +57,13 @@ All source under `src/`:
 - `src/feedback-server.ts` — Standalone feedback web UI (alternative entry)
 
 ## Versions
-- Server: `tasksync-mcp-http` — latest v1.3.0 (npm)
-- Plugin: `opencode-tasksync` — latest v1.2.0 (npm)
+- Server: `tasksync-mcp-http` — latest v1.3.1 (npm)
+- Plugin: `opencode-tasksync` — latest v1.2.2 (npm)
 - GitHub: `vikrant82/tasksync-mcp`
 
+## External Reference Directories (NOT part of this repo)
+- `opencode/` — OpenCode source checkout, for reference only. Do not modify unless asked.
+- `opencode-dynamic-context-pruning/` — Separate project checkout, for reference only. Do not modify unless asked.
+
 ## Branches
-- `main` — all work merged (PR #7 session alias + agent context + auto-prune, PR #8 restructuring)
+- `main` — all work merged through PR #10

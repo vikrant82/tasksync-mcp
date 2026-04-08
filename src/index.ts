@@ -39,6 +39,8 @@ import {
   normalizeAlias,
   inferAliasFromInitializeBody,
   slugifyForSessionId,
+  SERVER_VERSION,
+  GITHUB_URL,
 } from "./utils.js";
 
 const DEFAULT_TIMEOUT = 3_600_000; // safety-net timeout (1 hour); SSE keepalive prevents idle disconnects, this is the absolute max wait
@@ -446,7 +448,7 @@ function registerServerHandlers(targetServer: Server) {
 
 function createSessionServer(): Server {
   const sessionServer = new Server(
-    { name: "tasksync-server", version: "1.0.0" },
+    { name: "tasksync-server", version: SERVER_VERSION },
     { capabilities: { tools: {}, logging: {} } }
   );
   registerServerHandlers(sessionServer);
@@ -465,7 +467,9 @@ function startFeedbackUI() {
     const displayAlias = getSessionAlias(displaySessionId);
     const displayLabel = displayAlias ? `${displayAlias} (${displaySessionId})` : displaySessionId;
     return FEEDBACK_HTML
-      .replace("ACTIVE_SESSION_INFO", `Active session: ${displayLabel} | Known sessions: ${getAllSessions().size}`);
+      .replace("ACTIVE_SESSION_INFO", `Active session: ${displayLabel} | Known sessions: ${getAllSessions().size}`)
+      .replace("TASKSYNC_GITHUB_URL", GITHUB_URL)
+      .replace("TASKSYNC_VERSION", SERVER_VERSION);
   }
 
   feedbackApp.get("/", (_req, res) => {
@@ -546,6 +550,24 @@ function startFeedbackUI() {
       logEvent("info", "ui.sessions.alias.cleared", { sessionId });
     }
 
+    res.json({ ok: true, sessionId, alias: getSessionAlias(sessionId) });
+  });
+
+  feedbackApp.post("/sessions/:sessionId/title", (req, res) => {
+    const sessionId = req.params.sessionId;
+    if (!sessionId || !hasSession(sessionId)) {
+      res.status(404).json({ error: "Session not found" });
+      return;
+    }
+
+    const title = normalizeAlias(req.body?.title);
+    if (!title) {
+      res.status(400).json({ error: "Missing title" });
+      return;
+    }
+
+    sessionManager.setInferredAlias(sessionId, title);
+    logEvent("info", "api.sessions.title.set", { sessionId, title });
     res.json({ ok: true, sessionId, alias: getSessionAlias(sessionId) });
   });
 
@@ -857,8 +879,8 @@ function startFeedbackUI() {
   });
 
   feedbackApp.listen(uiPort, () => {
-    logEvent("info", "ui.started", { uiPort });
-    console.error(`Feedback UI running at http://localhost:${uiPort}`);
+    logEvent("info", "ui.started", { uiPort, version: SERVER_VERSION });
+    console.error(`Feedback UI v${SERVER_VERSION} running at http://localhost:${uiPort}`);
   });
 
   // Auto-prune stale sessions periodically
@@ -1092,7 +1114,7 @@ async function runStreamableHTTPServer() {
     res.json({
       status: "ok",
       server: "tasksync-mcp",
-      version: "1.0.0",
+      version: SERVER_VERSION,
       transport: "streamable-http",
       sessions: getAllSessions().size,
       persistence: "file-backed minimal session state; transient in-memory replay",
@@ -1101,6 +1123,7 @@ async function runStreamableHTTPServer() {
 
   app.listen(mcpPort, () => {
     logEvent("info", "server.started", {
+      version: SERVER_VERSION,
       mcpPort,
       uiEnabled: !noUI,
       uiPort,
@@ -1109,7 +1132,7 @@ async function runStreamableHTTPServer() {
       keepaliveIntervalMs: KEEPALIVE_INTERVAL_MS,
       logLevel,
     });
-    console.error(`TaskSync MCP Server running on Streamable HTTP at http://localhost:${mcpPort}`);
+    console.error(`TaskSync MCP Server v${SERVER_VERSION} running on Streamable HTTP at http://localhost:${mcpPort}`);
     console.error(`MCP endpoint: http://localhost:${mcpPort}/mcp`);
     console.error(`Health check: http://localhost:${mcpPort}/health`);
   });

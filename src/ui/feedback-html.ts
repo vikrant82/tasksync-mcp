@@ -501,6 +501,9 @@ ${FEEDBACK_HTML_ENHANCED_STYLES}
     </div>
   </div>
 </div>
+<footer class="app-footer">
+  <a href="TASKSYNC_GITHUB_URL" target="_blank" rel="noopener noreferrer">TaskSync</a> <span class="version">vTASKSYNC_VERSION</span>
+</footer>
 <div id="toast-viewport" class="toast-viewport" aria-live="polite" aria-atomic="false"></div>
 <script>
   // ── DOM references ──
