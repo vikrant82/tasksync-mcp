@@ -120,6 +120,10 @@ export class SessionManager {
       this.manualAliases.set(sessionId, alias);
     }
 
+    for (const [sessionId, alias] of Object.entries(snapshot.inferredAliasBySession)) {
+      this.inferredAliases.set(sessionId, alias);
+    }
+
     // Restore client generations
     for (const [alias, gen] of Object.entries(snapshot.clientGenerationByAlias)) {
       this.clientGenerations.set(alias, gen);
@@ -514,6 +518,8 @@ export class SessionManager {
 
   setInferredAlias(sessionId: string, alias: string): void {
     this.inferredAliases.set(sessionId, alias);
+    this.store.setInferredAlias(sessionId, alias);
+    this.events.onStateChange(sessionId);
   }
 
   getNextClientGeneration(alias: string): number {

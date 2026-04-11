@@ -73,28 +73,6 @@ Response:
 
 Idempotent — returns ok if session already exists. Creates a session without MCP transport.
 
-### `POST /api/wait/:sessionId`
-
-Long-poll for feedback. Blocks until feedback is submitted or client disconnects.
-
-Auto-registers the session if it doesn't exist.
-
-Response (feedback received):
-```json
-{ "type": "feedback", "content": "user's feedback text", "images": [] }
-```
-
-Response (session closed):
-```json
-{ "type": "closed", "reason": "Session deleted" }
-```
-
-Behavior:
-- If queued feedback exists, returns immediately
-- Otherwise blocks until feedback is submitted via the web UI
-- Client abort (e.g., `AbortController.abort()`) cancels the wait cleanly
-- No keepalive needed (designed for localhost use)
-
 ### `POST /api/context/:sessionId`
 
 Send agent context (assistant's last message) for display in the UI and remote notifications.
@@ -122,6 +100,11 @@ SSE events:
 - `event: closed` — `{ "type": "closed", "reason": "..." }`
 - `event: error` — `{ "type": "error", "message": "..." }`
 - SSE comments (`: keepalive`) every 30 seconds to prevent idle timeouts
+
+Behavior:
+- If queued feedback exists, the server emits a `feedback` event immediately after the stream opens
+- Otherwise the stream stays open until feedback is submitted, the session is closed, or the client disconnects
+- Client abort closes the SSE connection cleanly and clears the pending waiter
 
 ### `POST /api/status/:sessionId`
 
