@@ -237,7 +237,38 @@ export const FEEDBACK_HTML = `<!DOCTYPE html>
     transition: border-color var(--transition-fast), box-shadow var(--transition-fast);
   }
   textarea:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-subtle); }
-  .actions { display: flex; gap: 0.5rem; margin-top: 0.75rem; }
+  .quick-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+    align-items: center;
+    margin-bottom: 0.75rem;
+    padding: 0.6rem 0.7rem;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: var(--accent-subtle);
+  }
+  .quick-actions-label { font-size: 0.78rem; color: var(--fg-muted); margin-right: 0.1rem; }
+  .quick-actions[hidden] { display: none; }
+  .quick-actions .btn-secondary,
+  .quick-actions .btn-primary {
+    min-width: 8rem;
+  }
+  .action-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.75rem;
+    align-items: center;
+    justify-content: space-between;
+    margin-top: 0.75rem;
+  }
+  .action-group {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+    align-items: center;
+  }
+  .action-group-submit { margin-left: auto; }
   button {
     padding: 0.5rem 1rem;
     border: none;
@@ -387,6 +418,11 @@ ${FEEDBACK_HTML_ENHANCED_STYLES}
     .btn-small { padding: 0.3rem 0.5rem; font-size: 0.75rem; }
     .session-actions { flex-wrap: wrap; }
     .session-actions input { min-width: 0; }
+    .quick-actions-label { width: 100%; }
+    .action-row { align-items: stretch; }
+    .action-group { width: 100%; }
+    .action-group-submit { margin-left: 0; }
+    .action-group-submit .btn-primary { width: 100%; }
   }
 </style>
 </head>
@@ -409,6 +445,11 @@ ${FEEDBACK_HTML_ENHANCED_STYLES}
         <h2 id="composer-heading">Send feedback</h2>
         <form id="form" aria-labelledby="composer-heading">
           <label for="feedback" class="sr-only" style="position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);border:0;">Feedback message</label>
+          <div id="quick-actions" class="quick-actions" hidden>
+            <span class="quick-actions-label">Quick replies</span>
+            <button type="button" id="approve-button" class="btn-secondary">Approve</button>
+            <button type="button" id="continue-button" class="btn-secondary">Continue</button>
+          </div>
           <div class="md-toolbar" id="md-toolbar" role="toolbar" aria-label="Markdown formatting">
             <button type="button" data-md="bold" class="md-btn-bold" title="Bold (Ctrl+B)">B</button>
             <button type="button" data-md="italic" class="md-btn-italic" title="Italic (Ctrl+I)">I</button>
@@ -427,13 +468,17 @@ ${FEEDBACK_HTML_ENHANCED_STYLES}
           <textarea id="feedback" class="feedback-box" placeholder="Type your feedback here... (paste or drag images)" autofocus aria-describedby="keyboard-hint"></textarea>
           <span id="keyboard-hint" style="position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);border:0;">Press Cmd+Enter or Ctrl+Enter to submit. Tab to indent. Escape to exit textarea.</span>
           <div id="image-previews" class="image-previews"></div>
-          <div class="actions">
-            <button type="submit" id="send-button" class="btn-primary">Send Feedback</button>
-            <button type="button" id="clear-button" class="btn-secondary" onclick="clearFeedback()">Clear Draft</button>
-            <label class="image-attach-label" tabindex="0" role="button" aria-label="Attach image">
-              <input type="file" id="image-input" accept="image/png,image/jpeg,image/gif,image/webp" multiple style="display:none" />
-              Attach Image
-            </label>
+          <div class="action-row">
+            <div class="action-group">
+              <label class="image-attach-label" tabindex="0" role="button" aria-label="Attach image">
+                <input type="file" id="image-input" accept="image/png,image/jpeg,image/gif,image/webp" multiple style="display:none" />
+                Attach Image
+              </label>
+              <button type="button" id="clear-button" class="btn-secondary" onclick="clearFeedback()">Clear Draft</button>
+            </div>
+            <div class="action-group action-group-submit">
+              <button type="submit" id="send-button" class="btn-primary">Send Feedback</button>
+            </div>
           </div>
         </form>
         <div id="status" class="status" role="status" aria-live="polite"></div>
@@ -515,6 +560,9 @@ ${FEEDBACK_HTML_ENHANCED_STYLES}
   const clearButtonEl = document.getElementById('clear-button');
   const imagePreviewsEl = document.getElementById('image-previews');
   const imageInputEl = document.getElementById('image-input');
+  const quickActionsEl = document.getElementById('quick-actions');
+  const approveButtonEl = document.getElementById('approve-button');
+  const continueButtonEl = document.getElementById('continue-button');
   const mdToolbarEl = document.getElementById('md-toolbar');
   const historyListEl = document.getElementById('history-list');
   const historyScrollEl = document.getElementById('history-scroll');
@@ -701,6 +749,7 @@ ${FEEDBACK_HTML_COMPOSER_HISTORY_SCRIPT}
 
     // Stop existing timer — will restart if still needed
     if (waitTimerInterval) { clearInterval(waitTimerInterval); waitTimerInterval = null; }
+    if (quickActionsEl) quickActionsEl.hidden = !targetWaiting;
 
     if (targetWaiting) {
       const startedAt = targetSession.waitStartedAt;
