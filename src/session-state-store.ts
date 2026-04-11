@@ -50,7 +50,7 @@ const DEFAULT_PERSISTED_STATE: PersistedTaskSyncState = {
   version: 1,
   activeUiSessionId: "__default__",
   settings: {
-    disconnectAfterMinutes: 10,
+    disconnectAfterMinutes: 0,
   },
   feedbackBySession: {},
   sessionMetadataById: {},
@@ -153,7 +153,7 @@ export class SessionStateStore {
     const parsed = raw && typeof raw === "object" ? (raw as Record<string, unknown>) : {};
     const disconnectAfterMinutes = typeof parsed.disconnectAfterMinutes === "number"
       && Number.isFinite(parsed.disconnectAfterMinutes)
-      && parsed.disconnectAfterMinutes > 0
+      && parsed.disconnectAfterMinutes >= 0
       ? Math.floor(parsed.disconnectAfterMinutes)
       : DEFAULT_PERSISTED_STATE.settings.disconnectAfterMinutes;
 
@@ -257,7 +257,7 @@ export class SessionStateStore {
   }
 
   async setDisconnectAfterMinutes(minutes: number): Promise<void> {
-    const normalized = Number.isFinite(minutes) && minutes > 0
+    const normalized = Number.isFinite(minutes) && minutes >= 0
       ? Math.floor(minutes)
       : DEFAULT_PERSISTED_STATE.settings.disconnectAfterMinutes;
     this.state.settings.disconnectAfterMinutes = normalized;

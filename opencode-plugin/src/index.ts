@@ -34,8 +34,35 @@ const activeAgentBySession = new Map<string, string>();
  */
 const syncedTitles = new Map<string, string>();
 
-// Matches OpenCode's default auto-generated session titles
-const DEFAULT_TITLE_RE = /^(New session|Child session) - \d{4}-\d{2}-\d{2}T/;
+/**
+ * Caches the latest non-default title so failed sync attempts can be retried.
+ */
+const latestTitles = new Map<string, string>();
+
+// Matches OpenCode's default auto-generated session titles.
+// OpenCode may temporarily collapse them to just "New session" / "Child session"
+// in some UI paths, so filter both forms.
+const DEFAULT_TITLE_RE = /^(New session|Child session)( - \d{4}-\d{2}-\d{2}T.*)?$/;
+
+// Low-signal bootstrap/orientation titles tend to come from session startup
+// prompts, so ignore them unless there is a substantive suffix worth keeping.
+const TITLE_PREFIX_RE = /^(?:session\s+bootstrap|bootstrap\s+(?:the\s+)?session|start(?:ing)?\s+(?:a\s+)?(?:new\s+)?(?:working\s+)?session|resume(?:d|ing)?\s+(?:the\s+)?session|session\s+resume|session\s+initialization|project\s+orientation|load(?:ing)?\s+memory(?:\s+context)?)\s*[:\-\u2013]\s*/i;
+const LOW_SIGNAL_TITLE_RE = /^(?:session\s+bootstrap|bootstrap\s+(?:the\s+)?session|start(?:ing)?\s+(?:a\s+)?(?:new\s+)?(?:working\s+)?session|resume(?:d|ing)?\s+(?:the\s+)?session|session\s+resume|session\s+initialization|project\s+orientation|load(?:ing)?\s+memory(?:\s+context)?)(?:\b|\s)/i;
+
+function normalizeSyncedTitle(raw: unknown): string {
+  if (typeof raw !== "string") return "";
+
+  const title = raw.trim().replace(/\s+/g, " ").slice(0, 80);
+  if (!title || DEFAULT_TITLE_RE.test(title)) return "";
+
+  const stripped = title.replace(TITLE_PREFIX_RE, "").trim();
+  if (stripped && stripped !== title && !LOW_SIGNAL_TITLE_RE.test(stripped)) {
+    return stripped;
+  }
+
+  if (LOW_SIGNAL_TITLE_RE.test(title)) return "";
+  return title;
+}
 
 /**
  * Module-level cache for the most recent assistant text per session.
@@ -63,6 +90,34 @@ const NON_RETRYABLE_REASONS = new Set(["session_deleted", "session_pruned"]);
 // Built-in OpenCode agent names we can safely target when wildcard augmentation
 // is enabled, even if they are not explicitly defined in cfg.agent yet.
 const KNOWN_BUILT_IN_AGENTS = ["ask", "build", "plan", "general"] as const;
+
+async function ensureSession(serverUrl: string, sessionId: string): Promise<void> {
+  const resp = await fetch(`${serverUrl}/api/sessions`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ sessionId, alias: latestTitles.get(sessionId) }),
+  });
+
+  if (!resp.ok) {
+    throw new Error(`session register failed: HTTP ${resp.status}`);
+  }
+}
+
+async function syncTitle(serverUrl: string, sessionId: string, title: string): Promise<void> {
+  await ensureSession(serverUrl, sessionId);
+
+  const resp = await fetch(`${serverUrl}/sessions/${sessionId}/title`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ title }),
+  });
+
+  if (!resp.ok) {
+    throw new Error(`title sync failed: HTTP ${resp.status}`);
+  }
+
+  syncedTitles.set(sessionId, title);
+}
 
 const plugin: Plugin = async ({ directory }) => {
   const config = loadConfig(directory);
@@ -243,21 +298,17 @@ const plugin: Plugin = async ({ directory }) => {
           properties?: { sessionID?: string; info?: { id?: string; title?: string } };
         }).properties;
         const sessionId = props?.sessionID ?? props?.info?.id;
-        const title = props?.info?.title;
+        const title = normalizeSyncedTitle(props?.info?.title);
 
         if (
           sessionId &&
-          typeof title === "string" &&
           title.length > 0 &&
-          !DEFAULT_TITLE_RE.test(title) &&
           syncedTitles.get(sessionId) !== title
         ) {
-          syncedTitles.set(sessionId, title);
-          fetch(`${serverUrl}/sessions/${sessionId}/title`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ title }),
-          }).catch(() => {});
+          latestTitles.set(sessionId, title);
+          syncTitle(serverUrl, sessionId, title).catch((err) => {
+            console.error(`[tasksync] Title sync failed for ${sessionId}: ${err}`);
+          });
         }
       }
 
@@ -269,6 +320,7 @@ const plugin: Plugin = async ({ directory }) => {
           agentContextBySession.delete(sessionInfo.id);
           activeAgentBySession.delete(sessionInfo.id);
           syncedTitles.delete(sessionInfo.id);
+          latestTitles.delete(sessionInfo.id);
           const fyiTimer = fyiTimers.get(sessionInfo.id);
           if (fyiTimer) {
             clearTimeout(fyiTimer);
@@ -336,6 +388,17 @@ async function connectAndWait(
   sessionId: string,
   context: { abort: AbortSignal },
 ): Promise<ConnectResult> {
+  await ensureSession(serverUrl, sessionId);
+
+  const title = latestTitles.get(sessionId);
+  if (title && syncedTitles.get(sessionId) !== title) {
+    try {
+      await syncTitle(serverUrl, sessionId, title);
+    } catch (err) {
+      console.error(`[tasksync] Deferred title sync failed for ${sessionId}: ${err}`);
+    }
+  }
+
   // Cancel any pending FYI timer — the agent is now waiting for feedback,
   // so the text will be used as context in the notification instead.
   const fyiTimer = fyiTimers.get(sessionId);
