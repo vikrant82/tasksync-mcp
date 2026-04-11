@@ -9,7 +9,7 @@ Support multiple concurrent sessions with isolated feedback queues. Sessions can
 | Type | Origin | Transport | Session ID |
 |------|--------|-----------|------------|
 | **MCP** | MCP `initialize` | `StreamableHTTPServerTransport` | `{client-slug}-{generation}` (e.g., `opencode-1`) |
-| **Plugin** | `POST /api/sessions` or auto on `POST /api/wait/:id` | None (HTTP long-poll) | Plugin-provided (e.g., OpenCode session ID) |
+| **Plugin** | `POST /api/sessions` or auto on `GET /api/stream/:id` | SSE (`text/event-stream`) | Plugin-provided (e.g., OpenCode session ID) |
 
 Both types share the same feedback queue, waiter, and UI infrastructure.
 
@@ -25,11 +25,11 @@ Both types share the same feedback queue, waiter, and UI infrastructure.
 
 ## Plugin Session Lifecycle
 
-1. Plugin calls `POST /api/wait/:sessionId` (session auto-created if needed).
-2. Server registers a plugin session (no MCP transport).
-3. Request blocks until feedback is submitted via the web UI.
-4. Plugin receives feedback as JSON response.
-5. On `session.deleted` event, plugin calls `DELETE /sessions/:sessionId`.
+1. Plugin ensures the session exists via `POST /api/sessions` when needed.
+2. Plugin optionally sends the latest assistant text to `POST /api/context/:sessionId` for UI display and remote notifications.
+3. Plugin opens `GET /api/stream/:sessionId` and waits on the SSE stream.
+4. Server auto-registers the session if needed, sends keepalive comments every 30 seconds, and emits `feedback` / `closed` / `error` events.
+5. On `session.deleted`, the plugin calls `DELETE /sessions/:sessionId` and clears local session caches.
 6. Same auto-prune rules apply (configurable, default disabled).
 
 ## Feedback Routing

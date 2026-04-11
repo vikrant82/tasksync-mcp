@@ -78,12 +78,61 @@ export const FEEDBACK_HTML_COMPOSER_HISTORY_SCRIPT = `
     textbox.disabled = isBusy;
     sendButtonEl.disabled = isBusy;
     clearButtonEl.disabled = isBusy;
+    if (approveButtonEl) approveButtonEl.disabled = isBusy;
+    if (continueButtonEl) continueButtonEl.disabled = isBusy;
     if (imageInputEl) imageInputEl.disabled = isBusy;
     if (mdToolbarEl) mdToolbarEl.querySelectorAll('button').forEach(function(btn) { btn.disabled = isBusy; });
     sendButtonEl.classList.toggle('btn-busy', isBusy && mode === 'send');
     clearButtonEl.classList.toggle('btn-busy', isBusy && mode === 'clear');
     sendButtonEl.textContent = isBusy && mode === 'send' ? 'Sending…' : 'Send Feedback';
     clearButtonEl.textContent = isBusy && mode === 'clear' ? 'Clearing…' : 'Clear Draft';
+  }
+
+  async function submitFeedback(content, options) {
+    const opts = options || {};
+    const hasImages = opts.includeImages !== false && pendingImages.length > 0;
+    const explicitSessionId = selectedSessionId || activeSessionInputEl.value.trim();
+    const payload = { content, sessionId: explicitSessionId || undefined };
+
+    if (hasImages) {
+      payload.images = pendingImages.map(function(img) {
+        return { data: img.data, mimeType: img.mimeType };
+      });
+    }
+
+    const res = await fetch('/feedback', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+
+    if (!res.ok) {
+      throw new Error(await res.text());
+    }
+
+    if (opts.clearDraft !== false) {
+      textbox.value = '';
+      clearPendingImages();
+      autoResizeTextbox();
+      localStorage.removeItem(STORAGE_DRAFT);
+    }
+
+    if (opts.focus !== false) {
+      textbox.focus();
+    }
+  }
+
+  async function sendQuickAction(content, label) {
+    if (composerBusy) return;
+    setComposerBusy(true, 'send');
+    try {
+      await submitFeedback(content, { clearDraft: false, focus: true, includeImages: false });
+      showStatus(label + ' sent!', 'success');
+    } catch (err) {
+      showStatus('Failed to send ' + label.toLowerCase() + ': ' + readErrorMessage(err), 'error');
+    } finally {
+      setComposerBusy(false, 'send');
+    }
   }
 
   function readErrorMessage(err) {
@@ -667,36 +716,28 @@ export const FEEDBACK_HTML_COMPOSER_HISTORY_SCRIPT = `
     const text = textbox.value.trim();
     const hasImages = pendingImages.length > 0;
     if (!text && !hasImages) return;
-    const explicitSessionId = selectedSessionId || activeSessionInputEl.value.trim();
     setComposerBusy(true, 'send');
     try {
-      const payload = { content: text, sessionId: explicitSessionId || undefined };
-      if (hasImages) {
-        payload.images = pendingImages.map(function(img) {
-          return { data: img.data, mimeType: img.mimeType };
-        });
-      }
-      const res = await fetch('/feedback', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload)
-      });
-      if (res.ok) {
-        showStatus('Feedback sent!', 'success');
-        textbox.value = '';
-        clearPendingImages();
-        autoResizeTextbox();
-        localStorage.removeItem(STORAGE_DRAFT);
-        textbox.focus();
-      } else {
-        showStatus('Failed to send: ' + (await res.text()), 'error');
-      }
+      await submitFeedback(text, { clearDraft: true, focus: true });
+      showStatus('Feedback sent!', 'success');
     } catch (err) {
-      showStatus('Error: ' + err.message, 'error');
+      showStatus('Failed to send: ' + readErrorMessage(err), 'error');
     } finally {
       setComposerBusy(false, 'send');
     }
   });
+
+  if (approveButtonEl) {
+    approveButtonEl.addEventListener('click', function() {
+      sendQuickAction('approve', 'Approve');
+    });
+  }
+
+  if (continueButtonEl) {
+    continueButtonEl.addEventListener('click', function() {
+      sendQuickAction('continue', 'Continue');
+    });
+  }
 
   async function clearFeedback() {
     if (composerBusy) return;

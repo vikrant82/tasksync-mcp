@@ -5,5 +5,6 @@
 - Keep cross-platform behavior explicit (darwin/windows/linux branching for browser open command).
 - Error handling style: return MCP tool errors as `{ isError: true, content: [{type:'text', text: ...}] }`.
 - Logging style: operational events go to `console.error` (server-side diagnostics).
-- Tests use Jest with focused unit tests under `__tests__/`.
+- Tests use Jest with focused unit tests under `__tests__`.
 - Avoid unsafe path access; always go through allowed directory validation helpers.
+- **npm releases are automated** — never run `npm publish` manually. GitHub Actions (`.github/workflows/release.yml`) publishes to npm automatically when a GitHub release is created. Server releases triggered by `v*` tags, plugin releases by `plugin-v*` tags.
