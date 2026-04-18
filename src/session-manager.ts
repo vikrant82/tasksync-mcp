@@ -17,6 +17,7 @@ const DEFAULT_SESSION_ID = "__default__";
 const DEFAULT_DISCONNECT_AFTER_MINUTES = 0; // "Never" — auto-prune disabled by default
 const MIN_DISCONNECT_AFTER_MINUTES = 1;
 const MAX_DISCONNECT_AFTER_MINUTES = 24 * 60; // 1 day
+const DISCONNECTED_SESSION_PRUNE_MINUTES = 5; // Disconnected sessions prune faster
 const AUTO_PRUNE_INTERVAL_MS = 60 * 1000; // Check every minute
 const MAX_SESSION_HISTORY = 50;
 
@@ -56,7 +57,8 @@ export type StreamableSessionEntry = {
   clientGeneration: number | null;
   createdAt: string;
   lastActivityAt: string;
-  status: "active" | "closed";
+  disconnectedAt: string | null;
+  status: "active" | "disconnected" | "closed";
 };
 
 export type PendingFeedbackResult =
@@ -68,7 +70,7 @@ export type SessionInfo = {
   alias: string;
   createdAt: string;
   lastActivityAt: string;
-  status: "active" | "closed";
+  status: "active" | "disconnected" | "closed";
   isWaiting: boolean;
   waitStartedAt: string | null;
   hasQueuedFeedback: boolean;
@@ -182,6 +184,7 @@ export class SessionManager {
       clientGeneration,
       createdAt: now,
       lastActivityAt: now,
+      disconnectedAt: null,
       status: "active",
     };
 
@@ -303,6 +306,40 @@ export class SessionManager {
     this.persistSessionMetadata(sessionId, entry);
   }
 
+  /**
+   * Marks a session as disconnected. Called when we detect a genuine
+   * transport/connection closure (as opposed to normal response lifecycle).
+   */
+  markDisconnected(sessionId: string, reason: string): void {
+    const entry = this.sessions.get(sessionId);
+    if (!entry || entry.status === "closed") return;
+
+    const now = new Date().toISOString();
+    entry.status = "disconnected";
+    entry.disconnectedAt = now;
+
+    this.log("warn", "session.disconnected", { sessionId, reason });
+    this.persistSessionMetadata(sessionId, entry);
+    this.events.onStateChange(sessionId);
+  }
+
+  /**
+   * Marks a previously-disconnected session as active again.
+   * Called when a new MCP request arrives on a disconnected session.
+   */
+  markReconnected(sessionId: string): void {
+    const entry = this.sessions.get(sessionId);
+    if (!entry || entry.status !== "disconnected") return;
+
+    entry.status = "active";
+    entry.disconnectedAt = null;
+    entry.lastActivityAt = new Date().toISOString();
+
+    this.log("info", "session.reconnected", { sessionId });
+    this.persistSessionMetadata(sessionId, entry);
+    this.events.onStateChange(sessionId);
+  }
+
   // ==========================================================================
   // FEEDBACK STATE
   // ==========================================================================
@@ -399,6 +436,11 @@ export class SessionManager {
       waitStartedAt: waiter.startedAt,
       waitDurationMs: Date.now() - Date.parse(waiter.startedAt),
     });
+
+    const disconnectReasons = ["request_aborted", "response_disconnected", "stream_closed", "client_disconnected"];
+    if (disconnectReasons.includes(reason)) {
+      this.markDisconnected(sessionId, reason);
+    }
   }
 
   async deliverFeedback(
@@ -478,6 +520,22 @@ export class SessionManager {
     });
 
     return { content, images };
+  }
+
+  clearQueuedFeedback(sessionId: string): boolean {
+    const state = this.feedbackState.get(sessionId);
+    if (!state || state.queuedFeedback === null) return false;
+
+    state.queuedFeedback = null;
+    state.queuedImages = null;
+    state.queuedAt = null;
+
+    this.persistFeedbackState(sessionId);
+    this.events.onStateChange(sessionId);
+
+    this.log("info", "feedback.queued.cancelled", { sessionId });
+
+    return true;
   }
 
   appendHistory(sessionId: string, content: string, images?: ImageAttachment[]): void {
@@ -611,14 +669,21 @@ export class SessionManager {
    *
    * Rules:
    * 1. Sessions with active pendingWaiter are NEVER pruned (protected)
-   * 2. Sessions inactive longer than disconnectAfterMinutes are pruned
+   * 2. Disconnected sessions are pruned after DISCONNECTED_SESSION_PRUNE_MINUTES
+   * 3. Active sessions inactive longer than disconnectAfterMinutes are pruned
    */
   async pruneStale(): Promise<number> {
     // Guard against overlapping async runs
     if (this.pruning) return 0;
 
     const disconnectMinutes = this.getDisconnectAfterMinutes();
-    if (disconnectMinutes === 0) return 0; // "Never" — auto-prune disabled
+    // Even with auto-prune disabled (0), we still prune disconnected sessions
+    const hasActiveTimeout = disconnectMinutes > 0;
+    const disconnectedTimeoutMs = DISCONNECTED_SESSION_PRUNE_MINUTES * 60 * 1000;
+
+    if (!hasActiveTimeout) {
+      // If auto-prune is disabled, only check disconnected sessions
+    }
 
     this.pruning = true;
     try {
@@ -632,11 +697,21 @@ export class SessionManager {
         const state = this.feedbackState.get(sessionId);
         if (state?.pendingWaiter) continue; // Protected: actively waiting for feedback
 
-        const lastActivity = Date.parse(entry.lastActivityAt);
-        if (isNaN(lastActivity)) continue;
+        const isDisconnected = entry.status === "disconnected";
 
-        if (now - lastActivity > disconnectAfterMs) {
-          candidates.push(sessionId);
+        if (isDisconnected && entry.disconnectedAt) {
+          // Disconnected sessions use a shorter timeout measured from disconnectedAt
+          const disconnectedTime = Date.parse(entry.disconnectedAt);
+          if (!isNaN(disconnectedTime) && now - disconnectedTime > disconnectedTimeoutMs) {
+            candidates.push(sessionId);
+          }
+        } else if (hasActiveTimeout) {
+          // Active sessions use the configured inactivity timeout
+          const lastActivity = Date.parse(entry.lastActivityAt);
+          if (isNaN(lastActivity)) continue;
+          if (now - lastActivity > disconnectAfterMs) {
+            candidates.push(sessionId);
+          }
         }
       }
 
@@ -662,15 +737,25 @@ export class SessionManager {
         const state = this.feedbackState.get(sessionId);
         if (state?.pendingWaiter) continue;
 
+        const isDisconnected = meta?.status === "disconnected";
         const lastActivity = meta?.lastActivityAt ? Date.parse(meta.lastActivityAt) : 0;
-        if (lastActivity > 0 && (now - lastActivity) > disconnectAfterMs) {
+        const disconnectedTime = meta?.disconnectedAt ? Date.parse(meta.disconnectedAt) : 0;
+
+        let shouldPrune = false;
+        if (isDisconnected && disconnectedTime > 0) {
+          shouldPrune = (now - disconnectedTime) > disconnectedTimeoutMs;
+        } else if (hasActiveTimeout && lastActivity > 0) {
+          shouldPrune = (now - lastActivity) > disconnectAfterMs;
+        }
+
+        if (shouldPrune) {
           this.feedbackState.delete(sessionId);
           await this.store.deleteSession(sessionId);
           pruned++;
 
           this.log("info", "session.auto-pruned.orphaned", {
             sessionId,
-            inactiveMs: now - lastActivity,
+            inactiveMs: lastActivity > 0 ? now - lastActivity : undefined,
           });
         }
       }
@@ -726,6 +811,7 @@ export class SessionManager {
       createdAt: entry.createdAt,
       lastSeenAt: entry.lastActivityAt,
       lastActivityAt: entry.lastActivityAt,
+      disconnectedAt: entry.disconnectedAt,
       status: entry.status,
     });
   }

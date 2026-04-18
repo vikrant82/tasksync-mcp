@@ -17,7 +17,7 @@ Updated: 2026-04-11
 ## Composer / Input UX
 - Markdown toolbar above the textarea with formatting shortcuts
 - Images can be pasted, dragged, or selected via file picker; previews are shown inline
-- When the route-target session is waiting, a compact `Quick replies` strip appears above the editor with `Approve` and `Continue`
+- When the route-target session is waiting, a compact `Quick replies` strip appears above the editor with `Approve`, `Continue`, `Stop` (red/danger styled, sends termination message with sub-agent instruction), and `Pause Session` (triggers pause-session skill protocol for handoff memory writing)
 - `Send Feedback` remains the sole primary action; `Clear Draft` and `Attach Image` are grouped as neutral utilities below the editor
 - Goal of the latest tweak: reduce visual competition between canned responses and the main freeform submit path
 

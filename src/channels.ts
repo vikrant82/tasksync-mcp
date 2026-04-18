@@ -185,8 +185,13 @@ export class TelegramChannel implements NotificationChannel {
         return;
       }
 
+      const feedbackText = action === "stop"
+        ? "All tasks accomplished, we can **Stop** now. If you are a sub agent, repeat all the summary and information in one last message and stop. Do not call get_feedback again. If you are the main agent, you can just stop."
+        : action === "pause"
+        ? "$pause-session — Pause this session now. Follow the pause-session skill protocol: gather current state, identify open loops, write handoff memory (handoff__<topic>.md) with all context needed for seamless resumption including session summary, immediate goal, completed items, open loops, key decisions, files modified, next memories to load, and a detailed resumption prompt. Also update any stale knowledge memories and task lists. Confirm what was saved."
+        : action;
       this.log("info", "telegram.callback", { chatId, action, sessionId });
-      this.deliverFeedback(sessionId, action);
+      this.deliverFeedback(sessionId, feedbackText);
 
       await ctx.editMessageReplyMarkup({ reply_markup: undefined });
       await ctx.reply(`✅ Sent "${action}" to ${this.sessionLabel(sessionId)}`);
@@ -535,7 +540,10 @@ export class TelegramChannel implements NotificationChannel {
       .text("👍 Approve", `fb:approve:${sessionId.slice(0, 50)}`)
       .text("👎 Reject", `fb:reject:${sessionId.slice(0, 50)}`)
       .row()
-      .text("▶️ Continue", `fb:continue:${sessionId.slice(0, 50)}`);
+      .text("▶️ Continue", `fb:continue:${sessionId.slice(0, 50)}`)
+      .text("🛑 Stop", `fb:stop:${sessionId.slice(0, 50)}`)
+      .row()
+      .text("⏸️ Pause", `fb:pause:${sessionId.slice(0, 50)}`);
   }
 
 

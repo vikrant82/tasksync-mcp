@@ -28,7 +28,8 @@ export type PersistedSessionMetadata = {
   createdAt: string;
   lastSeenAt: string;
   lastActivityAt: string;
-  status: "active" | "closed";
+  disconnectedAt: string | null;
+  status: "active" | "disconnected" | "closed";
 };
 
 export type PersistedSettings = {
@@ -122,6 +123,8 @@ export class SessionStateStore {
       Object.entries(raw).map(([sessionId, value]) => {
         const persisted = value && typeof value === "object" ? (value as Record<string, unknown>) : {};
         const lastActivityAt = typeof persisted.lastActivityAt === "string" ? persisted.lastActivityAt : "";
+        const rawStatus = persisted.status;
+        const status = rawStatus === "closed" ? "closed" : rawStatus === "disconnected" ? "disconnected" : "active";
         return [
           sessionId,
           {
@@ -132,7 +135,8 @@ export class SessionStateStore {
             createdAt: typeof persisted.createdAt === "string" ? persisted.createdAt : "",
             lastSeenAt: typeof persisted.lastSeenAt === "string" ? persisted.lastSeenAt : lastActivityAt,
             lastActivityAt,
-            status: persisted.status === "closed" ? "closed" : "active",
+            disconnectedAt: typeof persisted.disconnectedAt === "string" ? persisted.disconnectedAt : null,
+            status,
           },
         ];
       })

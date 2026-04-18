@@ -27,7 +27,14 @@ Updated: 2026-04-11
 - Closeout on 2026-04-11 corrected stale docs that still mentioned plugin long-poll `POST /api/wait/:sessionId`; current plugin flow is SSE via `GET /api/stream/:sessionId`
 - `SESSION_WORKFLOW.md`, `API_SPEC.md`, and `FEEDBACK_UI_GUIDE.md` were updated during session closeout
 
+## In Progress: Quick-Reply Buttons + DCP Debugging (April 2026)
+- Added Stop button (red/danger, sends termination message with sub-agent instruction) and Pause Session button (triggers pause-session skill handoff protocol) to web UI and Telegram
+- Researched DCP plugin compression pipeline — found protected tool appending causes poor compression ratios
+- DCP debug logging enabled in dcp.jsonc (requires OpenCode restart)
+- Changes uncommitted
+
 ## Next Up
+- Debug DCP compression efficiency (protected tool output bloating summaries)
+- Commit button changes, bump version
 - Stabilization: end-to-end testing of all features
-- Update any remaining stale memories that still mention pre-v1.4.1 versions or long-poll plugin behavior
 - Consider further `index.ts` extraction (`alias-manager`, `feedback-handler`, MCP/UI server split)

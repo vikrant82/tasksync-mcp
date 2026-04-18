@@ -126,6 +126,7 @@ export const FEEDBACK_HTML = `<!DOCTYPE html>
   .flag-noqueue { color: #c9d1d9; border-color: rgba(139,148,158,0.45); background: rgba(139,148,158,0.1); }
   .flag-route { color: #d2b8ff; border-color: rgba(186,140,255,0.45); background: rgba(186,140,255,0.14); }
   .flag-stale { color: #f0883e; border-color: rgba(240,136,62,0.45); background: rgba(240,136,62,0.14); }
+  .flag-disconnected { color: #f85149; border-color: rgba(248,81,73,0.45); background: rgba(248,81,73,0.14); }
   .flag-remote { color: #79c0ff; border-color: rgba(121,192,255,0.45); background: rgba(121,192,255,0.14); }
   :root[data-theme="light"] .flag-waiting { color: #1a7f37; border-color: rgba(26,127,55,0.4); background: rgba(26,127,55,0.08); }
   :root[data-theme="light"] .flag-idle { color: #0969da; border-color: rgba(9,105,218,0.3); background: rgba(9,105,218,0.06); }
@@ -133,6 +134,7 @@ export const FEEDBACK_HTML = `<!DOCTYPE html>
   :root[data-theme="light"] .flag-noqueue { color: #656d76; border-color: rgba(101,109,118,0.4); background: rgba(101,109,118,0.06); }
   :root[data-theme="light"] .flag-route { color: #8250df; border-color: rgba(130,80,223,0.4); background: rgba(130,80,223,0.08); }
   :root[data-theme="light"] .flag-stale { color: #bc4c00; border-color: rgba(188,76,0,0.4); background: rgba(188,76,0,0.08); }
+  :root[data-theme="light"] .flag-disconnected { color: #cf222e; border-color: rgba(207,34,46,0.4); background: rgba(207,34,46,0.08); }
   :root[data-theme="light"] .flag-remote { color: #0550ae; border-color: rgba(5,80,174,0.4); background: rgba(5,80,174,0.08); }
   .session-alert-badge { display: inline-block; margin-left: 0.4rem; padding: 0.05rem 0.35rem; border-radius: 999px; font-size: 0.68rem; color: #b6f0bf; border: 1px solid rgba(63,185,80,0.45); background: rgba(63,185,80,0.14); }
   :root[data-theme="light"] .session-alert-badge { color: #1a7f37; border-color: rgba(26,127,55,0.4); background: rgba(26,127,55,0.08); }
@@ -251,8 +253,36 @@ export const FEEDBACK_HTML = `<!DOCTYPE html>
   .quick-actions-label { font-size: 0.78rem; color: var(--fg-muted); margin-right: 0.1rem; }
   .quick-actions[hidden] { display: none; }
   .quick-actions .btn-secondary,
-  .quick-actions .btn-primary {
+  .quick-actions .btn-primary,
+  .quick-actions .btn-danger {
     min-width: 8rem;
+  }
+  .queued-banner {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.75rem;
+    margin-bottom: 0.75rem;
+    padding: 0.5rem 0.75rem;
+    border: 1px solid var(--warning, #e2a308);
+    border-radius: var(--radius);
+    background: color-mix(in srgb, var(--warning, #e2a308) 12%, transparent);
+    font-size: 0.85rem;
+  }
+  .queued-banner[hidden] { display: none; }
+  .queued-banner-body {
+    display: flex;
+    align-items: baseline;
+    gap: 0.4rem;
+    min-width: 0;
+    overflow: hidden;
+  }
+  .queued-banner-label { font-weight: 600; white-space: nowrap; color: var(--fg-muted); }
+  .queued-banner-preview {
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    color: var(--fg);
   }
   .action-row {
     display: flex;
@@ -449,6 +479,15 @@ ${FEEDBACK_HTML_ENHANCED_STYLES}
             <span class="quick-actions-label">Quick replies</span>
             <button type="button" id="approve-button" class="btn-secondary">Approve</button>
             <button type="button" id="continue-button" class="btn-secondary">Continue</button>
+            <button type="button" id="stop-button" class="btn-danger">Stop</button>
+            <button type="button" id="pause-button" class="btn-secondary">Pause Session</button>
+          </div>
+          <div id="queued-banner" class="queued-banner" hidden>
+            <div class="queued-banner-body">
+              <span class="queued-banner-label">Queued:</span>
+              <span id="queued-banner-preview" class="queued-banner-preview"></span>
+            </div>
+            <button type="button" id="cancel-queued-btn" class="btn-danger btn-small">Cancel</button>
           </div>
           <div class="md-toolbar" id="md-toolbar" role="toolbar" aria-label="Markdown formatting">
             <button type="button" data-md="bold" class="md-btn-bold" title="Bold (Ctrl+B)">B</button>
@@ -563,6 +602,8 @@ ${FEEDBACK_HTML_ENHANCED_STYLES}
   const quickActionsEl = document.getElementById('quick-actions');
   const approveButtonEl = document.getElementById('approve-button');
   const continueButtonEl = document.getElementById('continue-button');
+  const stopButtonEl = document.getElementById('stop-button');
+  const pauseButtonEl = document.getElementById('pause-button');
   const mdToolbarEl = document.getElementById('md-toolbar');
   const historyListEl = document.getElementById('history-list');
   const historyScrollEl = document.getElementById('history-scroll');
@@ -575,6 +616,9 @@ ${FEEDBACK_HTML_ENHANCED_STYLES}
   const sessionListEl = document.getElementById('session-list');
   const activeSessionInputEl = document.getElementById('active-session-input');
   const sessionFilterEl = document.getElementById('session-filter');
+  const queuedBannerEl = document.getElementById('queued-banner');
+  const queuedBannerPreviewEl = document.getElementById('queued-banner-preview');
+  const cancelQueuedBtnEl = document.getElementById('cancel-queued-btn');
   const connectionDotEl = document.getElementById('connection-dot');
   const connectionLabelEl = document.getElementById('connection-label');
   const themeToggleEl = document.getElementById('theme-toggle');
@@ -659,24 +703,28 @@ ${FEEDBACK_HTML_COMPOSER_HISTORY_SCRIPT}
       ? '<span class="flag flag-route">route-target</span>'
       : '';
     const staleThreshold = 30 * 60 * 1000;
-    const isStale = !s.waitingForFeedback && s.lastActivityAt && (Date.now() - new Date(s.lastActivityAt).getTime()) > staleThreshold;
+    const isDisconnected = s.status === 'disconnected';
+    const isStale = !isDisconnected && !s.waitingForFeedback && s.lastActivityAt && (Date.now() - new Date(s.lastActivityAt).getTime()) > staleThreshold;
     const staleFlag = isStale ? '<span class="flag flag-stale" title="No activity for over 30 minutes">stale</span>' : '';
+    const disconnectedFlag = isDisconnected ? '<span class="flag flag-disconnected" title="Client disconnected' + (s.disconnectedAt ? ' ' + formatElapsed(s.disconnectedAt) + ' ago' : '') + '">disconnected</span>' : '';
     const remoteFlag = s.remoteEnabled ? '<span class="flag flag-remote" title="Remote notifications enabled">remote</span>' : '';
     const sessionUrl = s.sessionUrl || ('/session/' + encodeURIComponent(s.sessionId));
     const metaCreated = s.createdAt ? formatTimeShort(new Date(s.createdAt)) : '';
     const metaActivity = s.lastActivityAt ? formatElapsed(s.lastActivityAt) + ' ago' : '';
     const metaWait = (s.waitingForFeedback && s.waitStartedAt) ? formatElapsed(s.waitStartedAt) : '';
+    const metaDisconnected = (isDisconnected && s.disconnectedAt) ? formatElapsed(s.disconnectedAt) + ' ago' : '';
     const metaParts = [];
     if (metaCreated) metaParts.push('Created ' + metaCreated);
     if (metaActivity) metaParts.push('Active ' + metaActivity);
     if (metaWait) metaParts.push('Waiting ' + metaWait);
+    if (metaDisconnected) metaParts.push('Disconnected ' + metaDisconnected);
     const metaLine = metaParts.length > 0
       ? '<div class="session-meta">' + metaParts.join(' · ') + '</div>'
       : '';
     return '<li class="session-item ' + (isRoute ? 'route-target ' : '') + (isActive ? 'active ' : '') + (isStale ? 'stale ' : '') + (hasAlert ? 'alert' : '') + '">'
       + '<div class="session-name">' + escapeHtml(displayName) + '</div>'
       + (alias ? ('<div class="session-id">' + escapeHtml(s.sessionId) + '</div>') : '')
-      + '<div class="session-flags">' + waitingFlag + queueFlag + routeFlag + staleFlag + remoteFlag + (hasAlert ? ' <span class="session-alert-badge">new wait</span>' : '') + '</div>'
+      + '<div class="session-flags">' + waitingFlag + queueFlag + routeFlag + staleFlag + disconnectedFlag + remoteFlag + (hasAlert ? ' <span class="session-alert-badge">new wait</span>' : '') + '</div>'
       + metaLine
       + '<a class="session-link" href="' + sessionUrl + '" target="_blank" rel="noopener">Open in new window</a>'
       + '<div class="session-buttons">'
@@ -790,6 +838,20 @@ ${FEEDBACK_HTML_COMPOSER_HISTORY_SCRIPT}
     }
   }
 
+  function updateQueuedBanner(sessions) {
+    if (!queuedBannerEl) return;
+    const target = selectedSessionId || '';
+    const session = Array.isArray(sessions)
+      ? sessions.find(function(s) { return s.sessionId === target; })
+      : null;
+    if (session && session.queuedFeedbackPreview) {
+      queuedBannerPreviewEl.textContent = '"' + session.queuedFeedbackPreview + '"';
+      queuedBannerEl.hidden = false;
+    } else {
+      queuedBannerEl.hidden = true;
+    }
+  }
+
   function resolveSelectedSession(sessions, active, fallbackSessionId) {
     if (selectedSessionId && !sessions.some((s) => s.sessionId === selectedSessionId)) {
       selectedSessionId = (active && active !== '(none)') ? active : '';
@@ -848,7 +910,7 @@ ${FEEDBACK_HTML_COMPOSER_HISTORY_SCRIPT}
       detectNotificationTransitions(sessions, targetSessionId);
       updateWaitBanner(targetSessionId, sessions);
 
-      const sessionSignature = JSON.stringify(sessions.map((s) => [s.sessionId, s.alias, s.waitingForFeedback, s.hasQueuedFeedback, s.remoteEnabled])) + ':' + selectedSessionId + ':' + channelsAvailable;
+      const sessionSignature = JSON.stringify(sessions.map((s) => [s.sessionId, s.alias, s.waitingForFeedback, s.hasQueuedFeedback, s.remoteEnabled, s.status, s.disconnectedAt])) + ':' + selectedSessionId + ':' + channelsAvailable;
       if (sessionSignature !== lastRenderedSessionSignature) {
         renderSessionList(sessions, active);
         lastRenderedSessionSignature = sessionSignature;
@@ -1040,6 +1102,7 @@ ${FEEDBACK_HTML_COMPOSER_HISTORY_SCRIPT}
     notifiedSessions.delete(sessionId);
     updateActiveSessionSummary(lastActiveId, lastSessionsData || []);
     updateSessionMeta(lastActiveId, lastSessionsData || []);
+    updateQueuedBanner(lastSessionsData || []);
     updateUrlSession(sessionId);
     connectEvents();
     showStatus('Routing feedback to selected session', 'success');
@@ -1160,6 +1223,7 @@ ${FEEDBACK_HTML_COMPOSER_HISTORY_SCRIPT}
     const targetSessionId = selectedSessionId || active;
     detectNotificationTransitions(sessions, targetSessionId);
     updateWaitBanner(targetSessionId, sessions);
+    updateQueuedBanner(sessions);
     updateAgentContextPanel(payload.agentContext || null, payload.agentContextSource || null);
 
     const sessionSignature = JSON.stringify(sessions.map((s) => [s.sessionId, s.alias, s.waitingForFeedback, s.hasQueuedFeedback, s.remoteEnabled])) + ':' + selectedSessionId + ':' + channelsAvailable;
@@ -1207,6 +1271,23 @@ ${FEEDBACK_HTML_COMPOSER_HISTORY_SCRIPT}
     if (!btn) return;
     mdToolbarAction(btn.getAttribute('data-md'));
   });
+
+  // ── Cancel queued feedback ──
+  if (cancelQueuedBtnEl) {
+    cancelQueuedBtnEl.addEventListener('click', async function() {
+      const sessionId = selectedSessionId;
+      if (!sessionId) return;
+      try {
+        const res = await fetch('/sessions/' + encodeURIComponent(sessionId) + '/cancel-queued', { method: 'POST' });
+        if (res.ok) {
+          queuedBannerEl.hidden = true;
+          showStatus('Queued message cancelled', 'success');
+        }
+      } catch (err) {
+        showStatus('Failed to cancel', 'error');
+      }
+    });
+  }
 
   // ── Auto-prune timeout: load from server, save on change ──
   async function loadDisconnectAfter() {

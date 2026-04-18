@@ -106,7 +106,7 @@ Get notified on Telegram when agents are waiting for feedback, and reply directl
 3. Start the server, then send `/start` to your bot in Telegram
 4. Enable remote mode per session via the web UI toggle
 
-When an agent calls `get_feedback`, you'll receive a Telegram message with the agent's question and quick-reply buttons (Approve / Reject / Continue). Reply with text or tap a button — the feedback goes straight to the agent.
+When an agent calls `get_feedback`, you'll receive a Telegram message with the agent's question and quick-reply buttons (Approve / Reject / Continue / Stop / Pause). Reply with text or tap a button — the feedback goes straight to the agent.
 
 > **One bot per server.** Telegram only allows one process to poll for updates per bot token. If you run multiple TaskSync servers, create a separate bot for each via [@BotFather](https://t.me/botfather).
 

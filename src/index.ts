@@ -136,7 +136,13 @@ function markSessionActivity(sessionId: string, reason: string): void {
   sessionManager.markActivity(sessionId, reason);
 }
 
+function markDisconnected(sessionId: string, reason: string): void {
+  sessionManager.markDisconnected(sessionId, reason);
+}
 
+function markReconnected(sessionId: string): void {
+  sessionManager.markReconnected(sessionId);
+}
 
 function buildUiStatePayload(targetSessionId?: string) {
   const activeUiSessionId = getActiveUiSessionId();
@@ -150,9 +156,16 @@ function buildUiStatePayload(targetSessionId?: string) {
       sessionUrl: `http://localhost:${uiPort}/session/${encodeURIComponent(sessionId)}`,
       createdAt: entry.createdAt,
       lastActivityAt: entry.lastActivityAt,
+      status: entry.status,
+      disconnectedAt: entry.disconnectedAt,
       waitingForFeedback: Boolean(state.pendingWaiter),
       waitStartedAt: state.pendingWaiter?.startedAt || null,
       hasQueuedFeedback: Boolean(state.queuedFeedback),
+      queuedFeedbackPreview: state.queuedFeedback
+        ? state.queuedFeedback.length > 100
+          ? state.queuedFeedback.slice(0, 100) + "..."
+          : state.queuedFeedback
+        : null,
       remoteEnabled: state.remoteEnabled,
     };
   });
@@ -590,6 +603,17 @@ function startFeedbackUI() {
     }
   });
 
+  feedbackApp.post("/sessions/:sessionId/cancel-queued", (req, res) => {
+    const sessionId = req.params.sessionId;
+    const cleared = sessionManager.clearQueuedFeedback(sessionId);
+    if (cleared) {
+      logEvent("info", "ui.sessions.cancel-queued.ok", { sessionId });
+      res.json({ ok: true });
+    } else {
+      res.json({ ok: false, reason: "no_queued_feedback" });
+    }
+  });
+
   feedbackApp.post("/sessions/prune", async (req, res) => {
     const maxAgeMs = typeof req.body?.maxAgeMs === "number" ? req.body.maxAgeMs : 60 * 60 * 1000;
     const forceIncludeWaiting = req.body?.forceIncludeWaiting === true;
@@ -988,6 +1012,7 @@ async function runStreamableHTTPServer() {
         // Note: lastActivityAt is NOT updated here on every request.
         // It's only updated on meaningful activity (get_feedback calls, feedback delivery).
         // This prevents MCP polling from keeping stale sessions alive.
+        markReconnected(sessionId);
         logEvent("debug", "mcp.session.reused", {
           sessionId,
           method: req.method,
@@ -1044,9 +1069,8 @@ async function runStreamableHTTPServer() {
           const closedSessionId = createdTransport.sessionId;
           if (!closedSessionId) return;
           persistAsync("session.persistence.stream_closed", clearPendingWaiter(closedSessionId, "stream_closed"));
+          markDisconnected(closedSessionId, "stream_closed");
           const closedEntry = getSession(closedSessionId);
-          // Stream closures can be transient (for example SSE reconnects).
-          // Keep session state unless an explicit DELETE/session disconnect occurs.
           logEvent("warn", "mcp.session.stream.closed", {
             sessionId: closedSessionId,
             transportId: closedEntry?.transportId ?? transportId,
@@ -1065,6 +1089,7 @@ async function runStreamableHTTPServer() {
           clientGeneration,
           createdAt: new Date().toISOString(),
           lastActivityAt: new Date().toISOString(),
+          disconnectedAt: null,
           status: "active",
         };
         }

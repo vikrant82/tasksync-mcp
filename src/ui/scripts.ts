@@ -80,6 +80,8 @@ export const FEEDBACK_HTML_COMPOSER_HISTORY_SCRIPT = `
     clearButtonEl.disabled = isBusy;
     if (approveButtonEl) approveButtonEl.disabled = isBusy;
     if (continueButtonEl) continueButtonEl.disabled = isBusy;
+    if (stopButtonEl) stopButtonEl.disabled = isBusy;
+    if (pauseButtonEl) pauseButtonEl.disabled = isBusy;
     if (imageInputEl) imageInputEl.disabled = isBusy;
     if (mdToolbarEl) mdToolbarEl.querySelectorAll('button').forEach(function(btn) { btn.disabled = isBusy; });
     sendButtonEl.classList.toggle('btn-busy', isBusy && mode === 'send');
@@ -736,6 +738,30 @@ export const FEEDBACK_HTML_COMPOSER_HISTORY_SCRIPT = `
   if (continueButtonEl) {
     continueButtonEl.addEventListener('click', function() {
       sendQuickAction('continue', 'Continue');
+    });
+  }
+
+  if (stopButtonEl) {
+    stopButtonEl.addEventListener('click', async function() {
+      const sessionId = selectedSessionId || activeSessionInputEl.value.trim();
+      await sendQuickAction('All tasks accomplished, we can **Stop** now. If you are a sub agent, repeat all the summary and information in one last message and stop. Do not call get_feedback again. If you are the main agent, you can just stop.', 'Stop');
+      // Force-close the session after a short delay to let the agent receive the stop message
+      if (sessionId) {
+        setTimeout(async () => {
+          try {
+            await fetch('/sessions/' + encodeURIComponent(sessionId), { method: 'DELETE' });
+            showStatus('Session closed', 'success');
+          } catch (_) {
+            // Ignore — the feedback was already sent
+          }
+        }, 2000);
+      }
+    });
+  }
+
+  if (pauseButtonEl) {
+    pauseButtonEl.addEventListener('click', function() {
+      sendQuickAction('$pause-session — Pause this session now. Follow the pause-session skill protocol: gather current state, identify open loops, write handoff memory (handoff__<topic>.md) with all context needed for seamless resumption including session summary, immediate goal, completed items, open loops, key decisions, files modified, next memories to load, and a detailed resumption prompt. Also update any stale knowledge memories and task lists. Confirm what was saved.', 'Pause Session');
     });
   }
 

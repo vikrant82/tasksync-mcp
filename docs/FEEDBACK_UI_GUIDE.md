@@ -9,7 +9,7 @@ This guide explains how to use the TaskSync feedback page when multiple sessions
 - `Rename`: Set a readable alias for a session row (does not change the real MCP session ID).
 - `Prune Stale`: Remove sessions that have been inactive for over 30 minutes. Shows the stale count (e.g., `Prune Stale (3)`), disabled when no stale sessions exist.
 - `Auto prune after`: Settings dropdown controlling automatic session cleanup. Options: Never (default), 5/10/20/30/60/120/1440 minutes. When set to "Never", auto-prune is disabled and only manual "Prune Stale" is available.
-- `Quick replies`: When the route-target session is waiting, a compact `Approve` / `Continue` strip appears above the editor. These are convenience replies; `Send Feedback` remains the primary action for freeform input.
+- `Quick replies`: When the route-target session is waiting, a compact `Approve` / `Continue` / `Stop` / `Pause Session` strip appears above the editor. These are convenience replies; `Send Feedback` remains the primary action for freeform input. The `Stop` button (red) sends a termination message to end the agent's feedback loop. The `Pause Session` button triggers the pause-session skill protocol to save handoff memories for session resumption.
 - `route-target`: Badge showing the session currently selected by this tab.
 - `waiting`: Session is currently blocked on `get_feedback` and can be unblocked by sending feedback.
 - `queued`: Feedback exists for that session and will be returned on its next `get_feedback` call.
