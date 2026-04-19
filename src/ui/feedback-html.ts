@@ -284,6 +284,36 @@ export const FEEDBACK_HTML = `<!DOCTYPE html>
     text-overflow: ellipsis;
     color: var(--fg);
   }
+  .urgent-banner {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.75rem;
+    margin-bottom: 0.75rem;
+    padding: 0.5rem 0.75rem;
+    border: 1px solid var(--danger, #ef4444);
+    border-radius: var(--radius);
+    background: color-mix(in srgb, var(--danger, #ef4444) 12%, transparent);
+    font-size: 0.85rem;
+  }
+  .urgent-banner[hidden] { display: none; }
+  .urgent-banner-label { font-weight: 600; white-space: nowrap; color: var(--danger, #ef4444); }
+  .btn-warning {
+    padding: 0.5rem 1.2rem;
+    font-size: 0.97rem;
+    font-weight: 600;
+    border-radius: var(--radius);
+    border: 1.5px solid var(--warning, #e2a308);
+    background: color-mix(in srgb, var(--warning, #e2a308) 18%, transparent);
+    color: var(--fg);
+    cursor: pointer;
+    transition: background 0.15s, border-color 0.15s, transform 0.1s;
+  }
+  .btn-warning:hover {
+    background: color-mix(in srgb, var(--warning, #e2a308) 30%, transparent);
+    border-color: var(--warning, #e2a308);
+  }
+  .btn-warning:active { transform: scale(0.97); }
   .action-row {
     display: flex;
     flex-wrap: wrap;
@@ -489,6 +519,13 @@ ${FEEDBACK_HTML_ENHANCED_STYLES}
             </div>
             <button type="button" id="cancel-queued-btn" class="btn-danger btn-small">Cancel</button>
           </div>
+          <div id="urgent-banner" class="urgent-banner" hidden>
+            <div class="queued-banner-body">
+              <span class="urgent-banner-label">Urgent (pending):</span>
+              <span id="urgent-banner-preview" class="queued-banner-preview"></span>
+            </div>
+            <button type="button" id="cancel-urgent-btn" class="btn-danger btn-small">Cancel</button>
+          </div>
           <div class="md-toolbar" id="md-toolbar" role="toolbar" aria-label="Markdown formatting">
             <button type="button" data-md="bold" class="md-btn-bold" title="Bold (Ctrl+B)">B</button>
             <button type="button" data-md="italic" class="md-btn-italic" title="Italic (Ctrl+I)">I</button>
@@ -516,6 +553,7 @@ ${FEEDBACK_HTML_ENHANCED_STYLES}
               <button type="button" id="clear-button" class="btn-secondary" onclick="clearFeedback()">Clear Draft</button>
             </div>
             <div class="action-group action-group-submit">
+              <button type="button" id="interrupt-button" class="btn-warning" onclick="sendUrgentFeedback()" title="Send as urgent interrupt (agent sees it immediately, even mid-task)">Interrupt</button>
               <button type="submit" id="send-button" class="btn-primary">Send Feedback</button>
             </div>
           </div>
@@ -596,6 +634,7 @@ ${FEEDBACK_HTML_ENHANCED_STYLES}
   const statusEl = document.getElementById('status');
   const toastViewportEl = document.getElementById('toast-viewport');
   const sendButtonEl = document.getElementById('send-button');
+  const interruptButtonEl = document.getElementById('interrupt-button');
   const clearButtonEl = document.getElementById('clear-button');
   const imagePreviewsEl = document.getElementById('image-previews');
   const imageInputEl = document.getElementById('image-input');
@@ -798,6 +837,7 @@ ${FEEDBACK_HTML_COMPOSER_HISTORY_SCRIPT}
     // Stop existing timer — will restart if still needed
     if (waitTimerInterval) { clearInterval(waitTimerInterval); waitTimerInterval = null; }
     if (quickActionsEl) quickActionsEl.hidden = !targetWaiting;
+    if (interruptButtonEl) interruptButtonEl.hidden = targetWaiting;
 
     if (targetWaiting) {
       const startedAt = targetSession.waitStartedAt;
@@ -849,6 +889,22 @@ ${FEEDBACK_HTML_COMPOSER_HISTORY_SCRIPT}
       queuedBannerEl.hidden = false;
     } else {
       queuedBannerEl.hidden = true;
+    }
+  }
+
+  function updateUrgentBanner(sessions) {
+    var urgentBannerEl = document.getElementById('urgent-banner');
+    var urgentPreviewEl = document.getElementById('urgent-banner-preview');
+    if (!urgentBannerEl || !urgentPreviewEl) return;
+    var target = selectedSessionId || '';
+    var session = Array.isArray(sessions)
+      ? sessions.find(function(s) { return s.sessionId === target; })
+      : null;
+    if (session && session.urgentFeedbackPreview) {
+      urgentPreviewEl.textContent = '"' + session.urgentFeedbackPreview + '"';
+      urgentBannerEl.hidden = false;
+    } else {
+      urgentBannerEl.hidden = true;
     }
   }
 
@@ -910,7 +966,7 @@ ${FEEDBACK_HTML_COMPOSER_HISTORY_SCRIPT}
       detectNotificationTransitions(sessions, targetSessionId);
       updateWaitBanner(targetSessionId, sessions);
 
-      const sessionSignature = JSON.stringify(sessions.map((s) => [s.sessionId, s.alias, s.waitingForFeedback, s.hasQueuedFeedback, s.remoteEnabled, s.status, s.disconnectedAt])) + ':' + selectedSessionId + ':' + channelsAvailable;
+      const sessionSignature = JSON.stringify(sessions.map((s) => [s.sessionId, s.alias, s.waitingForFeedback, s.hasQueuedFeedback, s.hasUrgentFeedback, s.remoteEnabled, s.status, s.disconnectedAt])) + ':' + selectedSessionId + ':' + channelsAvailable;
       if (sessionSignature !== lastRenderedSessionSignature) {
         renderSessionList(sessions, active);
         lastRenderedSessionSignature = sessionSignature;
@@ -1103,6 +1159,7 @@ ${FEEDBACK_HTML_COMPOSER_HISTORY_SCRIPT}
     updateActiveSessionSummary(lastActiveId, lastSessionsData || []);
     updateSessionMeta(lastActiveId, lastSessionsData || []);
     updateQueuedBanner(lastSessionsData || []);
+    updateUrgentBanner(lastSessionsData || []);
     updateUrlSession(sessionId);
     connectEvents();
     showStatus('Routing feedback to selected session', 'success');
@@ -1224,9 +1281,10 @@ ${FEEDBACK_HTML_COMPOSER_HISTORY_SCRIPT}
     detectNotificationTransitions(sessions, targetSessionId);
     updateWaitBanner(targetSessionId, sessions);
     updateQueuedBanner(sessions);
+    updateUrgentBanner(sessions);
     updateAgentContextPanel(payload.agentContext || null, payload.agentContextSource || null);
 
-    const sessionSignature = JSON.stringify(sessions.map((s) => [s.sessionId, s.alias, s.waitingForFeedback, s.hasQueuedFeedback, s.remoteEnabled])) + ':' + selectedSessionId + ':' + channelsAvailable;
+    const sessionSignature = JSON.stringify(sessions.map((s) => [s.sessionId, s.alias, s.waitingForFeedback, s.hasQueuedFeedback, s.hasUrgentFeedback, s.remoteEnabled])) + ':' + selectedSessionId + ':' + channelsAvailable;
     if (sessionSignature !== lastRenderedSessionSignature) {
       renderSessionList(sessions, active);
       lastRenderedSessionSignature = sessionSignature;
@@ -1288,6 +1346,55 @@ ${FEEDBACK_HTML_COMPOSER_HISTORY_SCRIPT}
       }
     });
   }
+
+  // ── Cancel urgent feedback ──
+  var cancelUrgentBtnEl = document.getElementById('cancel-urgent-btn');
+  if (cancelUrgentBtnEl) {
+    cancelUrgentBtnEl.addEventListener('click', async function() {
+      const sessionId = selectedSessionId;
+      if (!sessionId) return;
+      try {
+        const res = await fetch('/sessions/' + encodeURIComponent(sessionId) + '/cancel-urgent', { method: 'POST' });
+        if (res.ok) {
+          var urgentBannerEl = document.getElementById('urgent-banner');
+          if (urgentBannerEl) urgentBannerEl.hidden = true;
+          showStatus('Urgent message cancelled', 'success');
+        }
+      } catch (err) {
+        showStatus('Failed to cancel urgent', 'error');
+      }
+    });
+  }
+
+  // ── Send urgent (interrupt) feedback ──
+  window.sendUrgentFeedback = async function() {
+    const sessionId = selectedSessionId;
+    if (!sessionId) { showStatus('Select a session first', 'error'); return; }
+    const content = textbox.value.trim();
+    if (!content) { showStatus('Type a message first', 'error'); return; }
+    try {
+      const res = await fetch('/sessions/' + encodeURIComponent(sessionId) + '/urgent-feedback', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ content: content }),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        textbox.value = '';
+        textbox.style.height = 'auto';
+        if (data.delivered) {
+          showStatus('Urgent message delivered to agent', 'success');
+        } else {
+          showStatus('Urgent message queued (agent will see it on next check_interrupts)', 'success');
+        }
+      } else {
+        const data = await res.json().catch(function() { return {}; });
+        showStatus(data.error || 'Failed to send urgent', 'error');
+      }
+    } catch (err) {
+      showStatus('Failed to send urgent: ' + err.message, 'error');
+    }
+  };
 
   // ── Auto-prune timeout: load from server, save on change ──
   async function loadDisconnectAfter() {

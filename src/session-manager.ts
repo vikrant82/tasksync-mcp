@@ -7,7 +7,20 @@
 
 import type { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import type { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
-import { SessionStateStore, type ImageAttachment, type PersistedFeedbackState } from "./session-state-store.js";
+import { AliasStateManager } from "./alias-state.js";
+import {
+  FeedbackStateManager,
+  type FeedbackChannelState,
+  type PendingFeedbackResult,
+  type PendingWaiter,
+} from "./feedback-state.js";
+import { SessionStateStore, type ImageAttachment } from "./session-state-store.js";
+
+export type {
+  FeedbackChannelState,
+  PendingFeedbackResult,
+  PendingWaiter,
+} from "./feedback-state.js";
 
 // ============================================================================
 // CONSTANTS
@@ -19,35 +32,10 @@ const MIN_DISCONNECT_AFTER_MINUTES = 1;
 const MAX_DISCONNECT_AFTER_MINUTES = 24 * 60; // 1 day
 const DISCONNECTED_SESSION_PRUNE_MINUTES = 5; // Disconnected sessions prune faster
 const AUTO_PRUNE_INTERVAL_MS = 60 * 1000; // Check every minute
-const MAX_SESSION_HISTORY = 50;
 
 // ============================================================================
 // TYPES
 // ============================================================================
-
-export type PendingWaiter = {
-  waitId: string;
-  startedAt: string;
-  requestId: string;
-  resolve: (result: PendingFeedbackResult) => void;
-};
-
-export type FeedbackChannelState = {
-  pendingWaiter: PendingWaiter | null;
-  queuedFeedback: string | null;
-  queuedImages: ImageAttachment[] | null;
-  queuedAt: string | null;
-  latestFeedback: string;
-  history: {
-    role: "user";
-    content: string;
-    images?: ImageAttachment[];
-    createdAt: string;
-  }[];
-  remoteEnabled: boolean;
-  agentContext: string | null;
-  agentContextSource: "assistant" | "fyi" | null;
-};
 
 export type StreamableSessionEntry = {
   transport?: StreamableHTTPServerTransport;
@@ -60,10 +48,6 @@ export type StreamableSessionEntry = {
   disconnectedAt: string | null;
   status: "active" | "disconnected" | "closed";
 };
-
-export type PendingFeedbackResult =
-  | { type: "feedback"; content: string; images?: ImageAttachment[] }
-  | { type: "closed"; reason: string };
 
 export type SessionInfo = {
   sessionId: string;
@@ -88,18 +72,31 @@ export type SessionManagerEvents = {
 
 export class SessionManager {
   private sessions = new Map<string, StreamableSessionEntry>();
-  private feedbackState = new Map<string, FeedbackChannelState>();
-  private manualAliases = new Map<string, string>();
-  private inferredAliases = new Map<string, string>();
-  private clientGenerations = new Map<string, number>();
-  private activeUiSessionId = DEFAULT_SESSION_ID;
+  private aliasState: AliasStateManager;
+  private feedbackState: FeedbackStateManager;
   private pruneIntervalId: NodeJS.Timeout | null = null;
   private pruning = false;
 
   constructor(
     private store: SessionStateStore,
     private events: SessionManagerEvents
-  ) {}
+  ) {
+    this.aliasState = new AliasStateManager({
+      defaultSessionId: DEFAULT_SESSION_ID,
+      onStateChange: (sessionId) => this.events.onStateChange(sessionId),
+      persistManualAlias: (sessionId, alias) => this.store.setManualAlias(sessionId, alias),
+      persistInferredAlias: (sessionId, alias) => this.store.setInferredAlias(sessionId, alias),
+      persistClientGeneration: (alias, generation) => this.store.setClientGeneration(alias, generation),
+      persistActiveUiSessionId: (sessionId) => this.store.setActiveUiSessionId(sessionId),
+    });
+    this.feedbackState = new FeedbackStateManager({
+      onStateChange: (sessionId) => this.events.onStateChange(sessionId),
+      markActivity: (sessionId, reason) => this.markActivity(sessionId, reason),
+      markDisconnected: (sessionId, reason) => this.markDisconnected(sessionId, reason),
+      log: (level, event, details) => this.log(level, event, details),
+      persistFeedbackState: (sessionId, state) => this.store.saveFeedbackState(sessionId, state),
+    });
+  }
 
   // ==========================================================================
   // INITIALIZATION
@@ -114,45 +111,16 @@ export class SessionManager {
   private async hydrateFromStore(): Promise<void> {
     const snapshot = this.store.getSnapshot();
 
-    // Restore active UI session
-    this.activeUiSessionId = snapshot.activeUiSessionId || DEFAULT_SESSION_ID;
-
-    // Restore aliases
-    for (const [sessionId, alias] of Object.entries(snapshot.manualAliasBySession)) {
-      this.manualAliases.set(sessionId, alias);
-    }
-
-    for (const [sessionId, alias] of Object.entries(snapshot.inferredAliasBySession)) {
-      this.inferredAliases.set(sessionId, alias);
-    }
-
-    // Restore client generations
-    for (const [alias, gen] of Object.entries(snapshot.clientGenerationByAlias)) {
-      this.clientGenerations.set(alias, gen);
-    }
+    this.aliasState.hydrate(snapshot);
 
     // Restore feedback state (but NOT session entries - those require live transport)
-    for (const [sessionId, persisted] of Object.entries(snapshot.feedbackBySession)) {
-      this.feedbackState.set(sessionId, {
-        pendingWaiter: null, // Can't restore pending waiters across restart
-        queuedFeedback: persisted.queuedFeedback,
-        queuedImages: persisted.queuedImages ?? null,
-        queuedAt: persisted.queuedAt,
-        latestFeedback: persisted.latestFeedback,
-        history: Array.isArray(persisted.history) ? persisted.history : [],
-        remoteEnabled: persisted.remoteEnabled === true,
-        agentContext: null,
-        agentContextSource: null,
-      });
-    }
+    this.feedbackState.hydrate(snapshot.feedbackBySession);
 
     this.log("info", "session-manager.hydrated", {
       sessionCount: Object.keys(snapshot.sessionMetadataById).length,
-      feedbackStateCount: this.feedbackState.size,
-      activeUiSessionId: this.activeUiSessionId,
-      remoteEnabledSessions: Array.from(this.feedbackState.entries())
-        .filter(([, s]) => s.remoteEnabled)
-        .map(([id]) => id),
+      feedbackStateCount: this.feedbackState.size(),
+      activeUiSessionId: this.aliasState.getActiveUiSessionId(),
+      remoteEnabledSessions: this.feedbackState.getRemoteEnabledSessions(),
     });
   }
 
@@ -219,7 +187,7 @@ export class SessionManager {
 
   getLiveSessions(): SessionInfo[] {
     return Array.from(this.sessions.entries()).map(([sessionId, entry]) => {
-      const state = this.feedbackState.get(sessionId);
+      const state = this.feedbackState.getExistingState(sessionId);
       return {
         sessionId,
         alias: this.getSessionAlias(sessionId),
@@ -267,14 +235,7 @@ export class SessionManager {
 
     this.sessions.delete(sessionId);
     this.feedbackState.delete(sessionId);
-    this.manualAliases.delete(sessionId);
-    this.inferredAliases.delete(sessionId);
-
-    // Update active UI session if needed
-    if (this.activeUiSessionId === sessionId) {
-      this.activeUiSessionId = DEFAULT_SESSION_ID;
-      await this.store.setActiveUiSessionId(DEFAULT_SESSION_ID);
-    }
+    await this.aliasState.deleteSession(sessionId);
 
     await this.store.deleteSession(sessionId);
     this.events.onStateChange();
@@ -345,102 +306,43 @@ export class SessionManager {
   // ==========================================================================
 
   getFeedbackState(sessionId: string): FeedbackChannelState {
-    const existing = this.feedbackState.get(sessionId);
-    if (existing) return existing;
-
-    const created: FeedbackChannelState = {
-      pendingWaiter: null,
-      queuedFeedback: null,
-      queuedImages: null,
-      queuedAt: null,
-      latestFeedback: "",
-      history: [],
-      remoteEnabled: false,
-      agentContext: null,
-      agentContextSource: null,
-    };
-    this.feedbackState.set(sessionId, created);
-    this.log("debug", "feedback.state.created", { sessionId });
-    return created;
+    return this.feedbackState.getFeedbackState(sessionId);
   }
 
   isWaiting(sessionId: string): boolean {
-    const state = this.feedbackState.get(sessionId);
-    return Boolean(state?.pendingWaiter);
+    return this.feedbackState.isWaiting(sessionId);
   }
 
   setRemoteEnabled(sessionId: string, enabled: boolean): void {
-    const state = this.getFeedbackState(sessionId);
-    state.remoteEnabled = enabled;
-    this.persistFeedbackState(sessionId).catch((err) => {
-      this.log("error", "session.remote.persist_failed", { sessionId, error: String(err) });
-    });
-    this.events.onStateChange(sessionId);
-    this.log("info", "session.remote.toggled", { sessionId, enabled });
+    this.feedbackState.setRemoteEnabled(sessionId, enabled);
   }
 
   isRemoteEnabled(sessionId: string): boolean {
-    const state = this.feedbackState.get(sessionId);
-    return state?.remoteEnabled ?? false;
+    return this.feedbackState.isRemoteEnabled(sessionId);
   }
 
   setAgentContext(sessionId: string, context: string | null, source: "assistant" | "fyi" = "assistant"): void {
-    const state = this.getFeedbackState(sessionId);
-    state.agentContext = context;
-    state.agentContextSource = context !== null ? source : null;
-    if (context !== null) {
-      this.markActivity(sessionId, "agent_context");
-    }
-    this.events.onStateChange(sessionId);
+    this.feedbackState.setAgentContext(sessionId, context, source);
   }
 
   getAgentContext(sessionId: string): string | null {
-    return this.feedbackState.get(sessionId)?.agentContext ?? null;
+    return this.feedbackState.getAgentContext(sessionId);
   }
 
   getAgentContextSource(sessionId: string): "assistant" | "fyi" | null {
-    return this.feedbackState.get(sessionId)?.agentContextSource ?? null;
+    return this.feedbackState.getAgentContextSource(sessionId);
   }
 
   hasQueuedFeedback(sessionId: string): boolean {
-    const state = this.feedbackState.get(sessionId);
-    return Boolean(state?.queuedFeedback);
+    return this.feedbackState.hasQueuedFeedback(sessionId);
   }
 
   setWaiter(sessionId: string, waiter: PendingWaiter): void {
-    const state = this.getFeedbackState(sessionId);
-    state.pendingWaiter = waiter;
-    this.markActivity(sessionId, "feedback_request");
-    this.persistFeedbackState(sessionId);
-    this.events.onStateChange(sessionId);
+    this.feedbackState.setWaiter(sessionId, waiter);
   }
 
   async clearPendingWaiter(sessionId: string, reason: string, expectedRequestId?: string): Promise<void> {
-    const state = this.feedbackState.get(sessionId);
-    if (!state || !state.pendingWaiter) return;
-
-    const waiter = state.pendingWaiter;
-    if (expectedRequestId && waiter.requestId !== expectedRequestId) return;
-
-    state.pendingWaiter = null;
-    await this.persistFeedbackState(sessionId);
-    this.events.onStateChange(sessionId);
-
-    waiter.resolve({ type: "closed", reason });
-
-    this.log("warn", "feedback.waiter.cleared", {
-      sessionId,
-      reason,
-      requestId: waiter.requestId,
-      waitId: waiter.waitId,
-      waitStartedAt: waiter.startedAt,
-      waitDurationMs: Date.now() - Date.parse(waiter.startedAt),
-    });
-
-    const disconnectReasons = ["request_aborted", "response_disconnected", "stream_closed", "client_disconnected"];
-    if (disconnectReasons.includes(reason)) {
-      this.markDisconnected(sessionId, reason);
-    }
+    await this.feedbackState.clearPendingWaiter(sessionId, reason, expectedRequestId);
   }
 
   async deliverFeedback(
@@ -448,111 +350,39 @@ export class SessionManager {
     content: string,
     images?: ImageAttachment[]
   ): Promise<{ delivered: boolean; queued: boolean }> {
-    const state = this.getFeedbackState(sessionId);
-    const queuedAt = new Date().toISOString();
-
-    state.latestFeedback = content;
-    this.log("debug", "feedback.received", {
-      sessionId,
-      contentLength: content.length,
-      imageCount: images?.length ?? 0,
-      hasPendingWaiter: Boolean(state.pendingWaiter),
-    });
-
-    // If there's an active waiter, deliver immediately
-    if (state.pendingWaiter) {
-      const waiter = state.pendingWaiter;
-      state.pendingWaiter = null;
-      state.queuedAt = null;
-      state.queuedImages = null;
-      await this.persistFeedbackState(sessionId);
-      this.events.onStateChange(sessionId);
-
-      waiter.resolve({ type: "feedback", content, images });
-      this.markActivity(sessionId, "feedback_delivered");
-
-      this.log("info", "feedback.delivered", {
-        sessionId,
-        waitId: waiter.waitId,
-        contentLength: content.length,
-        imageCount: images?.length ?? 0,
-        waitDurationMs: Date.now() - Date.parse(waiter.startedAt),
-      });
-
-      return { delivered: true, queued: false };
-    }
-
-    // No waiter, queue the feedback
-    state.queuedFeedback = content;
-    state.queuedImages = images && images.length > 0 ? images : null;
-    state.queuedAt = queuedAt;
-    await this.persistFeedbackState(sessionId);
-    this.events.onStateChange(sessionId);
-
-    this.log("info", "feedback.queued", {
-      sessionId,
-      contentLength: content.length,
-      imageCount: images?.length ?? 0,
-    });
-
-    return { delivered: false, queued: true };
+    return this.feedbackState.deliverFeedback(sessionId, content, images);
   }
 
   consumeQueuedFeedback(sessionId: string): { content: string; images?: ImageAttachment[] } | null {
-    const state = this.feedbackState.get(sessionId);
-    if (!state || state.queuedFeedback === null) return null;
-
-    const content = state.queuedFeedback;
-    const images = state.queuedImages ?? undefined;
-
-    state.queuedFeedback = null;
-    state.queuedImages = null;
-    state.queuedAt = null;
-
-    this.persistFeedbackState(sessionId);
-    this.markActivity(sessionId, "queued_feedback_consumed");
-    this.events.onStateChange(sessionId);
-
-    this.log("info", "feedback.queued.consumed", {
-      sessionId,
-      contentLength: content.length,
-      imageCount: images?.length ?? 0,
-    });
-
-    return { content, images };
+    return this.feedbackState.consumeQueuedFeedback(sessionId);
   }
 
   clearQueuedFeedback(sessionId: string): boolean {
-    const state = this.feedbackState.get(sessionId);
-    if (!state || state.queuedFeedback === null) return false;
+    return this.feedbackState.clearQueuedFeedback(sessionId);
+  }
 
-    state.queuedFeedback = null;
-    state.queuedImages = null;
-    state.queuedAt = null;
+  async queueUrgentFeedback(
+    sessionId: string,
+    content: string,
+    images?: ImageAttachment[]
+  ): Promise<{ delivered: boolean; queued: boolean }> {
+    return this.feedbackState.queueUrgentFeedback(sessionId, content, images);
+  }
 
-    this.persistFeedbackState(sessionId);
-    this.events.onStateChange(sessionId);
+  consumeUrgentFeedback(sessionId: string): { content: string; images?: ImageAttachment[] } | null {
+    return this.feedbackState.consumeUrgentFeedback(sessionId);
+  }
 
-    this.log("info", "feedback.queued.cancelled", { sessionId });
+  hasUrgentFeedback(sessionId: string): boolean {
+    return this.feedbackState.hasUrgentFeedback(sessionId);
+  }
 
-    return true;
+  clearUrgentFeedback(sessionId: string): boolean {
+    return this.feedbackState.clearUrgentFeedback(sessionId);
   }
 
   appendHistory(sessionId: string, content: string, images?: ImageAttachment[]): void {
-    const state = this.getFeedbackState(sessionId);
-    state.history.push({
-      role: "user",
-      content,
-      images,
-      createdAt: new Date().toISOString(),
-    });
-
-    // Trim to max history
-    while (state.history.length > MAX_SESSION_HISTORY) {
-      state.history.shift();
-    }
-
-    this.persistFeedbackState(sessionId);
+    this.feedbackState.appendHistory(sessionId, content, images);
   }
 
   // ==========================================================================
@@ -560,32 +390,19 @@ export class SessionManager {
   // ==========================================================================
 
   getSessionAlias(sessionId: string): string {
-    return (
-      this.manualAliases.get(sessionId) ||
-      this.inferredAliases.get(sessionId) ||
-      this.sessions.get(sessionId)?.clientAlias ||
-      sessionId
-    );
+    return this.aliasState.getSessionAlias(sessionId, this.sessions.get(sessionId)?.clientAlias);
   }
 
   setManualAlias(sessionId: string, alias: string): void {
-    this.manualAliases.set(sessionId, alias);
-    this.store.setManualAlias(sessionId, alias);
-    this.events.onStateChange(sessionId);
+    this.aliasState.setManualAlias(sessionId, alias);
   }
 
   setInferredAlias(sessionId: string, alias: string): void {
-    this.inferredAliases.set(sessionId, alias);
-    this.store.setInferredAlias(sessionId, alias);
-    this.events.onStateChange(sessionId);
+    this.aliasState.setInferredAlias(sessionId, alias);
   }
 
   getNextClientGeneration(alias: string): number {
-    const current = this.clientGenerations.get(alias) ?? 0;
-    const next = current + 1;
-    this.clientGenerations.set(alias, next);
-    this.store.setClientGeneration(alias, next);
-    return next;
+    return this.aliasState.getNextClientGeneration(alias);
   }
 
   // ==========================================================================
@@ -593,13 +410,11 @@ export class SessionManager {
   // ==========================================================================
 
   getActiveUiSessionId(): string {
-    return this.activeUiSessionId;
+    return this.aliasState.getActiveUiSessionId();
   }
 
   async setActiveUiSession(sessionId: string): Promise<void> {
-    this.activeUiSessionId = sessionId;
-    await this.store.setActiveUiSessionId(sessionId);
-    this.events.onStateChange();
+    await this.aliasState.setActiveUiSession(sessionId);
   }
 
   /**
@@ -609,27 +424,7 @@ export class SessionManager {
    * No fallback chain - the caller must handle the error.
    */
   resolveTargetSession(requestedSessionId?: string): string | null {
-    // If a specific session was requested, validate it exists
-    if (requestedSessionId && requestedSessionId.trim().length > 0) {
-      if (this.sessions.has(requestedSessionId)) {
-        return requestedSessionId;
-      }
-      // Requested session doesn't exist - don't fall back
-      return null;
-    }
-
-    // No specific session requested - use active UI session if it exists
-    if (this.sessions.has(this.activeUiSessionId)) {
-      return this.activeUiSessionId;
-    }
-
-    // Active UI session doesn't exist - check if there's exactly one session
-    if (this.sessions.size === 1) {
-      return this.sessions.keys().next().value as string;
-    }
-
-    // Multiple sessions or none - can't auto-resolve
-    return null;
+    return this.aliasState.resolveTargetSession(this.sessions, requestedSessionId);
   }
 
   // ==========================================================================
@@ -694,7 +489,7 @@ export class SessionManager {
       // Collect candidates from live sessions
       const candidates: string[] = [];
       for (const [sessionId, entry] of this.sessions.entries()) {
-        const state = this.feedbackState.get(sessionId);
+        const state = this.feedbackState.getExistingState(sessionId);
         if (state?.pendingWaiter) continue; // Protected: actively waiting for feedback
 
         const isDisconnected = entry.status === "disconnected";
@@ -734,7 +529,7 @@ export class SessionManager {
       for (const [sessionId, meta] of Object.entries(persistedSessions)) {
         if (this.sessions.has(sessionId)) continue; // still live (or already pruned above)
 
-        const state = this.feedbackState.get(sessionId);
+        const state = this.feedbackState.getExistingState(sessionId);
         if (state?.pendingWaiter) continue;
 
         const isDisconnected = meta?.status === "disconnected";
@@ -783,7 +578,7 @@ export class SessionManager {
       if (age < maxAgeMs) continue;
 
       // Skip waiting sessions unless forced
-      const state = this.feedbackState.get(sessionId);
+      const state = this.feedbackState.getExistingState(sessionId);
       if (state?.pendingWaiter && !forceIncludeWaiting) continue;
 
       try {
@@ -814,22 +609,6 @@ export class SessionManager {
       disconnectedAt: entry.disconnectedAt,
       status: entry.status,
     });
-  }
-
-  private async persistFeedbackState(sessionId: string): Promise<void> {
-    const state = this.feedbackState.get(sessionId);
-    if (!state) return;
-
-    const persisted: PersistedFeedbackState = {
-      queuedFeedback: state.queuedFeedback,
-      queuedImages: state.queuedImages,
-      queuedAt: state.queuedAt,
-      latestFeedback: state.latestFeedback,
-      history: state.history,
-      remoteEnabled: state.remoteEnabled,
-    };
-
-    await this.store.saveFeedbackState(sessionId, persisted);
   }
 
   // ==========================================================================

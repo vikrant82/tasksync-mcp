@@ -10,6 +10,9 @@ export type PersistedFeedbackState = {
   queuedFeedback: string | null;
   queuedImages?: ImageAttachment[] | null;
   queuedAt: string | null;
+  urgentFeedback: string | null;
+  urgentImages?: ImageAttachment[] | null;
+  urgentAt: string | null;
   latestFeedback: string;
   history: {
     role: "user";
@@ -96,6 +99,9 @@ export class SessionStateStore {
             queuedFeedback: typeof persisted.queuedFeedback === "string" ? persisted.queuedFeedback : null,
             queuedImages: Array.isArray(persisted.queuedImages) ? sanitizeImageAttachments(persisted.queuedImages) : null,
             queuedAt: typeof persisted.queuedAt === "string" ? persisted.queuedAt : null,
+            urgentFeedback: typeof persisted.urgentFeedback === "string" ? persisted.urgentFeedback : null,
+            urgentImages: Array.isArray(persisted.urgentImages) ? sanitizeImageAttachments(persisted.urgentImages) : null,
+            urgentAt: typeof persisted.urgentAt === "string" ? persisted.urgentAt : null,
             latestFeedback: typeof persisted.latestFeedback === "string" ? persisted.latestFeedback : "",
             history: Array.isArray(persisted.history)
               ? persisted.history

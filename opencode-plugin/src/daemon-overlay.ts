@@ -119,5 +119,17 @@ This is the first iteration of the feedback loop, not a one-shot task.
 
 ---
 
+## Interrupt Handling (Experimental)
+
+Between extended multi-step operations (long tool chains, large refactors, multi-file edits), you may call \`check_interrupts\` — a **non-blocking** tool that returns any urgent feedback the user sent while you were working.
+
+- \`check_interrupts\` takes no arguments and returns immediately.
+- If urgent feedback exists, it returns \`[URGENT] <message>\`. **Stop your current plan, acknowledge the interrupt, and process the urgent feedback before continuing.**
+- If no urgent feedback exists, it returns a short "no interrupts" message. Continue your work.
+- This is **supplementary** to the \`get_feedback\` loop — it does not replace it. You still MUST call \`get_feedback\` at the end of every turn.
+- Call \`check_interrupts\` at natural breakpoints: between files, between todo items, after completing a logical unit. Do not call it after every single tool call — that adds overhead for no benefit. A good cadence is roughly once per logical step.
+
+---
+
 > **Remember:** The feedback loop is your new execution model. Your original role is unchanged — you are still the same agent with the same capabilities. You simply never "finish" a conversation; you always loop back for more feedback.
 `.trim();

@@ -172,12 +172,39 @@ const plugin: Plugin = async ({ directory }) => {
     },
   });
 
+  const checkInterrupts = tool({
+    description:
+      "Check for urgent interrupt messages from the TaskSync web UI. " +
+      "Returns immediately with any pending urgent feedback, or a no-op message if none is queued.",
+    args: {},
+    execute: async (_args, context) => {
+      const sessionId = context.sessionID;
+
+      try {
+        await ensureSession(serverUrl, sessionId);
+        const result = await fetchInterrupts(serverUrl, sessionId, context.abort);
+
+        if (result.images && result.images.length > 0) {
+          pendingImages.set(sessionId, result.images);
+        }
+
+        return result.content;
+      } catch (err: unknown) {
+        if (err instanceof DOMException && err.name === "AbortError") {
+          return "[check_interrupts aborted — tool was cancelled]";
+        }
+        throw err;
+      }
+    },
+  });
+
   return {
     tool: {
       get_feedback: getFeedback,
+      check_interrupts: checkInterrupts,
     },
 
-    // Layer 2: Inject images as FilePart attachments on the tool result.
+    // Layer 2: Inject images as FilePart attachments on feedback tool results.
     // This hook fires after execute() returns but before the result is persisted.
     // Since the hook fires AFTER resolveTools maps existing attachments (adding PartBase
     // fields), attachments we inject here must include id/sessionID/messageID themselves.
@@ -187,7 +214,7 @@ const plugin: Plugin = async ({ directory }) => {
       input: { tool: string; sessionID: string; callID: string },
       output: Record<string, unknown>,
     ) => {
-      if (input.tool !== "get_feedback") return;
+      if (input.tool !== "get_feedback" && input.tool !== "check_interrupts") return;
 
       const images = pendingImages.get(input.sessionID);
       if (!images || images.length === 0) return;
@@ -337,7 +364,7 @@ const plugin: Plugin = async ({ directory }) => {
         description: "TaskSync persistent daemon agent with mandatory feedback loop",
         mode: "primary" as const,
         prompt: DAEMON_AGENT_PROMPT,
-        tools: { get_feedback: true },
+        tools: { get_feedback: true, check_interrupts: true },
       };
 
       // Layer 3: Optional augmentation of other agents
@@ -347,7 +374,7 @@ const plugin: Plugin = async ({ directory }) => {
           if (!shouldAugmentAgent(name)) continue;
           if (!agent) continue;
 
-          agent.tools = { ...agent.tools, get_feedback: true };
+          agent.tools = { ...agent.tools, get_feedback: true, check_interrupts: true };
         }
 
         // For requested agents not present in cfg.agent yet, create partial config
@@ -366,7 +393,7 @@ const plugin: Plugin = async ({ directory }) => {
           if (cfg.agent[name]) continue; // already processed above
 
           cfg.agent[name] = {
-            tools: { get_feedback: true },
+            tools: { get_feedback: true, check_interrupts: true },
           };
         }
       }
@@ -377,6 +404,39 @@ const plugin: Plugin = async ({ directory }) => {
 type ConnectResult =
   | { retry: false; value: string }
   | { retry: true; reason: string };
+
+interface InterruptResult {
+  content: string;
+  images?: ImageAttachment[];
+}
+
+async function fetchInterrupts(
+  serverUrl: string,
+  sessionId: string,
+  signal: AbortSignal,
+): Promise<InterruptResult> {
+  const resp = await fetch(`${serverUrl}/api/interrupts/${sessionId}`, {
+    signal,
+    headers: {
+      Accept: "application/json",
+    },
+  });
+
+  if (!resp.ok) {
+    const text = await resp.text().catch(() => "unknown error");
+    throw new Error(`interrupt check failed: HTTP ${resp.status}: ${text}`);
+  }
+
+  const result = await resp.json() as {
+    content?: unknown;
+    images?: unknown;
+  };
+
+  return {
+    content: typeof result.content === "string" ? result.content : "No pending interrupts.",
+    images: Array.isArray(result.images) ? result.images as ImageAttachment[] : undefined,
+  };
+}
 
 /**
  * Single SSE connection attempt. Returns either a terminal result (feedback text

@@ -143,6 +143,7 @@ node dist/index.js
 
 ## Documentation
 
+- [Architecture](docs/ARCHITECTURE.md) — Current module map and Excalidraw architecture diagram
 - [OpenCode Plugin Guide](docs/OPENCODE_PLUGIN.md) — Plugin setup, configuration, agent augmentation, remote mode
 - [API Specification](docs/API_SPEC.md) — MCP tools, HTTP endpoints, REST API
 - [Session Workflow](docs/SESSION_WORKFLOW.md) — Session lifecycle and routing
