@@ -72,6 +72,7 @@ export type SessionManagerEvents = {
 
 export class SessionManager {
   private sessions = new Map<string, StreamableSessionEntry>();
+  private protocolReminderCounts = new Map<string, number>();
   private aliasState: AliasStateManager;
   private feedbackState: FeedbackStateManager;
   private pruneIntervalId: NodeJS.Timeout | null = null;
@@ -451,6 +452,25 @@ export class SessionManager {
     await this.store.setDisconnectAfterMinutes(normalized);
     this.log("info", "settings.disconnect_after.updated", { minutes: normalized });
     this.events.onStateChange();
+  }
+
+  getProtocolReminderEveryN(): number {
+    return this.store.getSnapshot().settings?.protocolReminderEveryN ?? 0;
+  }
+
+  async setProtocolReminderEveryN(value: number): Promise<void> {
+    const normalized = Number.isFinite(value) && value >= 0 ? Math.floor(value) : 0;
+    await this.store.setProtocolReminderEveryN(normalized);
+    this.log("info", "settings.protocol_reminder.updated", { everyN: normalized });
+    this.events.onStateChange();
+  }
+
+  shouldIncludeProtocolReminder(sessionId: string): boolean {
+    const everyN = this.getProtocolReminderEveryN();
+    if (everyN <= 0) return false;
+    const count = (this.protocolReminderCounts.get(sessionId) ?? 0) + 1;
+    this.protocolReminderCounts.set(sessionId, count);
+    return count % everyN === 0;
   }
 
   private startAutoPrune(): void {

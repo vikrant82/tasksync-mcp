@@ -597,6 +597,16 @@ ${FEEDBACK_HTML_ENHANCED_STYLES}
            <label><input id="notify-sound" type="checkbox" checked /> Sound alert</label>
             <label><input id="notify-desktop" type="checkbox" /> Desktop alert</label>
            <label><input id="show-agent-context" type="checkbox" /> Show assistant messages</label>
+           <label>Protocol reminder:
+             <select id="protocol-reminder-every" aria-label="Protocol reminder frequency">
+               <option value="0">Off</option>
+               <option value="1">Every feedback</option>
+               <option value="2">Every 2nd feedback</option>
+               <option value="3">Every 3rd feedback</option>
+               <option value="5">Every 5th feedback</option>
+               <option value="10">Every 10th feedback</option>
+             </select>
+           </label>
            <label>Mode:
              <select id="notify-mode" aria-label="Notification mode">
                <option value="focused">Focused session</option>
@@ -664,6 +674,7 @@ ${FEEDBACK_HTML_ENHANCED_STYLES}
   const themeIconEl = document.getElementById('theme-icon');
   const themeLabelEl = document.getElementById('theme-label');
   const disconnectAfterEl = document.getElementById('disconnect-after');
+  const protocolReminderEveryEl = document.getElementById('protocol-reminder-every');
   const agentContextPanelEl = document.getElementById('agent-context-panel');
   const agentContextContentEl = document.getElementById('agent-context-content');
   const agentContextToggleEl = document.getElementById('agent-context-toggle');
@@ -1405,6 +1416,9 @@ ${FEEDBACK_HTML_COMPOSER_HISTORY_SCRIPT}
         if (disconnectAfterEl && typeof data.disconnectAfterMinutes === 'number') {
           disconnectAfterEl.value = String(data.disconnectAfterMinutes);
         }
+        if (protocolReminderEveryEl && typeof data.protocolReminderEveryN === 'number') {
+          protocolReminderEveryEl.value = String(data.protocolReminderEveryN);
+        }
       }
     } catch { /* ignore */ }
   }
@@ -1422,6 +1436,26 @@ ${FEEDBACK_HTML_COMPOSER_HISTORY_SCRIPT}
            showStatus(minutes === 0 ? 'Auto-prune disabled (use Prune Stale for manual cleanup)' : 'Auto-prune timeout updated to ' + minutes + ' min', 'success');
          } else {
           showStatus('Failed to update auto-prune timeout', 'error');
+        }
+      } catch (err) {
+        showStatus('Error: ' + err.message, 'error');
+      }
+    });
+  }
+
+  if (protocolReminderEveryEl) {
+    protocolReminderEveryEl.addEventListener('change', async () => {
+      try {
+        const res = await fetch('/settings/protocol-reminder', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ everyN: parseInt(protocolReminderEveryEl.value, 10) || 0 })
+        });
+        if (res.ok) {
+          const everyN = parseInt(protocolReminderEveryEl.value, 10) || 0;
+          showStatus(everyN > 0 ? 'Protocol reminder cadence updated' : 'Protocol reminder disabled', 'success');
+        } else {
+          showStatus('Failed to update protocol reminder setting', 'error');
         }
       } catch (err) {
         showStatus('Error: ' + err.message, 'error');

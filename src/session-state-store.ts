@@ -37,6 +37,7 @@ export type PersistedSessionMetadata = {
 
 export type PersistedSettings = {
   disconnectAfterMinutes: number;
+  protocolReminderEveryN: number;
 };
 
 export type PersistedTaskSyncState = {
@@ -55,6 +56,7 @@ const DEFAULT_PERSISTED_STATE: PersistedTaskSyncState = {
   activeUiSessionId: "__default__",
   settings: {
     disconnectAfterMinutes: 0,
+    protocolReminderEveryN: 0,
   },
   feedbackBySession: {},
   sessionMetadataById: {},
@@ -166,8 +168,15 @@ export class SessionStateStore {
       && parsed.disconnectAfterMinutes >= 0
       ? Math.floor(parsed.disconnectAfterMinutes)
       : DEFAULT_PERSISTED_STATE.settings.disconnectAfterMinutes;
+    const protocolReminderEveryN = typeof parsed.protocolReminderEveryN === "number"
+      && Number.isFinite(parsed.protocolReminderEveryN)
+      && parsed.protocolReminderEveryN >= 0
+      ? Math.floor(parsed.protocolReminderEveryN)
+      : parsed.includeProtocolReminder === true
+        ? 1
+        : DEFAULT_PERSISTED_STATE.settings.protocolReminderEveryN;
 
-    return { disconnectAfterMinutes };
+    return { disconnectAfterMinutes, protocolReminderEveryN };
   }
 
   async load(): Promise<PersistedTaskSyncState> {
@@ -271,6 +280,11 @@ export class SessionStateStore {
       ? Math.floor(minutes)
       : DEFAULT_PERSISTED_STATE.settings.disconnectAfterMinutes;
     this.state.settings.disconnectAfterMinutes = normalized;
+    await this.save();
+  }
+
+  async setProtocolReminderEveryN(value: number): Promise<void> {
+    this.state.settings.protocolReminderEveryN = value;
     await this.save();
   }
 }
