@@ -131,9 +131,9 @@ const plugin: Plugin = async ({ directory }) => {
 
   const getFeedback = tool({
     description:
-      "Wait for human feedback via the TaskSync web UI. " +
-      "Blocks until the user submits feedback or the session is closed. " +
-      "Call this at the end of every response to maintain the daemon loop.",
+      "Wait for human feedback. " +
+      "Blocks until feedback arrives or the session is closed. " +
+      "This is the mandatory end-of-turn tool in the feedback loop protocol and must be called at the end of every response.",
     args: {},
     execute: async (_args, context) => {
       const sessionId = context.sessionID;
@@ -174,8 +174,9 @@ const plugin: Plugin = async ({ directory }) => {
 
   const checkInterrupts = tool({
     description:
-      "Check for urgent interrupt messages from the TaskSync web UI. " +
-      "Returns immediately with any pending urgent feedback, or a no-op message if none is queued.",
+      "Check for urgent feedback without blocking. " +
+      "Returns urgent feedback if queued, otherwise a no-op response. " +
+      "Call this at logical breakpoints during longer turns.",
     args: {},
     execute: async (_args, context) => {
       const sessionId = context.sessionID;
