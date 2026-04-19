@@ -36,6 +36,16 @@ Add to your global OpenCode config (`~/.config/opencode/opencode.json`):
 
 OpenCode auto-installs npm plugins at startup. No build step needed.
 
+### Updating
+
+OpenCode caches npm plugins in `~/.cache/opencode/`. Restarting OpenCode does **not** fetch the latest version. To update:
+
+```bash
+rm -rf ~/.cache/opencode/node_modules/opencode-tasksync
+```
+
+Then restart OpenCode — it will re-install the latest version on startup.
+
 ### Local Development
 
 For development from source, build the plugin first:

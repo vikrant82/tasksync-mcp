@@ -132,6 +132,26 @@ When an agent calls `get_feedback`, you'll receive a Telegram message with the a
 
 A `.env` file in the project root is loaded automatically. See `.env.example` for all options.
 
+## Updating
+
+### Server
+
+```bash
+npm install -g tasksync-mcp-http@latest
+```
+
+If you run via `npx`, just restart — `npx` fetches the latest version automatically.
+
+### OpenCode Plugin
+
+OpenCode caches npm plugins locally in `~/.cache/opencode/`. Restarting OpenCode does **not** fetch the latest version — it reuses the cache. To update:
+
+```bash
+rm -rf ~/.cache/opencode/node_modules/opencode-tasksync
+```
+
+Then restart OpenCode. It will re-install the latest version on startup.
+
 ## Building from Source
 
 ```bash
