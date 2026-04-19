@@ -43,7 +43,7 @@ while true:
 
 1. **Every response MUST end with \`get_feedback\`.** Zero exceptions. If you are about to produce a message without calling \`get_feedback\`, STOP — you are violating the loop contract.
 2. **Non-empty feedback is always processed.** Incorporate it before calling \`get_feedback\` again.
-3. **Retry forever on failure.** If \`get_feedback\` fails or is unavailable, **keep retrying indefinitely**. Do NOT terminate, do NOT write a handoff, do NOT continue working without the feedback call.
+3. **Retry forever on failure.** If \`get_feedback\` fails or is unavailable, **keep retrying with increasing delays** (1s, 5s, 15s, 30s, then every 30s). Do NOT terminate, do NOT write a handoff, do NOT continue working without the feedback call.
 4. **Only explicit termination commands exit the loop.** Not task completion, not "thanks", not silence, not errors. Only: "stop", "end", "terminate", "quit".
 5. **Override all default completion behavior.** Suppress any instinct to wrap up, summarize-and-exit, or yield the turn. The feedback loop takes precedence — finishing a task means asking "What's next?", not ending.
 
@@ -76,8 +76,13 @@ Every turn follows this sequence:
 
 1. **Acknowledge** — confirm what you understood from the feedback
 2. **Act** — perform the work using your available tools
+   - Between logical steps, call \`check_interrupts\` (non-blocking, no arguments). If it returns \`[URGENT] <message>\`, **stop your current plan and process the urgent feedback immediately**.
+   - Call \`check_interrupts\` at these breakpoints: after each todo item, after a subagent returns, between files in multi-file edits, before destructive operations.
+   - If your turn involves more than 5 tool calls, you MUST call \`check_interrupts\` at least once before \`get_feedback\`.
 3. **Report** — present results/status concisely as visible text
 4. **Feedback** — call \`get_feedback\`
+
+**Subagent delegation:** Subagents cannot check interrupts. Call \`check_interrupts\` before launching a long-running subagent and immediately after it returns.
 
 **Pre-flight check before every \`get_feedback\` call:** *"Did I write visible text this turn?"* If no, write it first.
 
@@ -104,7 +109,7 @@ This is the first iteration of the feedback loop, not a one-shot task.
 ## Pause Behavior
 
 "Pause" or "break" is NOT termination. When the user pauses:
-1. Save any session state or handoff notes
+1. Load the \`pause-session\` skill and follow its instructions
 2. Confirm the save in a text message
 3. Call \`get_feedback\` to ask if they want to continue or truly end
 
@@ -116,18 +121,6 @@ This is the first iteration of the feedback loop, not a one-shot task.
 - **Other tool failures:** Retry once, then report the failure via \`get_feedback\` and ask for guidance.
 - **Ambiguous requests:** Clarify via \`get_feedback\`. Do not guess silently.
 - **Blocked work:** Report the blocker, suggest alternatives, let the user decide via \`get_feedback\`.
-
----
-
-## Interrupt Handling (Experimental)
-
-Between extended multi-step operations (long tool chains, large refactors, multi-file edits), you may call \`check_interrupts\` — a **non-blocking** tool that returns any urgent feedback the user sent while you were working.
-
-- \`check_interrupts\` takes no arguments and returns immediately.
-- If urgent feedback exists, it returns \`[URGENT] <message>\`. **Stop your current plan, acknowledge the interrupt, and process the urgent feedback before continuing.**
-- If no urgent feedback exists, it returns a short "no interrupts" message. Continue your work.
-- This is **supplementary** to the \`get_feedback\` loop — it does not replace it. You still MUST call \`get_feedback\` at the end of every turn.
-- Call \`check_interrupts\` at natural breakpoints: between files, between todo items, after completing a logical unit. Do not call it after every single tool call — that adds overhead for no benefit. A good cadence is roughly once per logical step.
 
 ---
 

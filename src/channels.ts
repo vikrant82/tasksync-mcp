@@ -188,7 +188,7 @@ export class TelegramChannel implements NotificationChannel {
       const feedbackText = action === "stop"
         ? "All tasks accomplished, we can **Stop** now. If you are a sub agent, repeat all the summary and information in one last message and stop. Do not call get_feedback again. If you are the main agent, you can just stop."
         : action === "pause"
-        ? "$pause-session — Pause this session now. Follow the pause-session skill protocol: gather current state, identify open loops, write handoff memory (handoff__<topic>.md) with all context needed for seamless resumption including session summary, immediate goal, completed items, open loops, key decisions, files modified, next memories to load, and a detailed resumption prompt. Also update any stale knowledge memories and task lists. Confirm what was saved."
+        ? "$pause-session — Pause this session now. Load the pause-session skill and follow its full protocol."
         : action;
       this.log("info", "telegram.callback", { chatId, action, sessionId });
       this.deliverFeedback(sessionId, feedbackText);

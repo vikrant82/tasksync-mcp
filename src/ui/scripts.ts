@@ -761,7 +761,7 @@ export const FEEDBACK_HTML_COMPOSER_HISTORY_SCRIPT = `
 
   if (pauseButtonEl) {
     pauseButtonEl.addEventListener('click', function() {
-      sendQuickAction('$pause-session — Pause this session now. Follow the pause-session skill protocol: gather current state, identify open loops, write handoff memory (handoff__<topic>.md) with all context needed for seamless resumption including session summary, immediate goal, completed items, open loops, key decisions, files modified, next memories to load, and a detailed resumption prompt. Also update any stale knowledge memories and task lists. Confirm what was saved.', 'Pause Session');
+      sendQuickAction('$pause-session — Pause this session now. Load the pause-session skill and follow its full protocol.', 'Pause Session');
     });
   }
 
