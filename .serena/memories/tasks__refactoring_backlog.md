@@ -1,6 +1,6 @@
 # Refactoring & Test Backlog
 
-Updated: 2026-04-19
+Updated: 2026-04-20
 
 ## Architecture / Project Structure
 - [x] Extract `SessionManager` from `src/index.ts`

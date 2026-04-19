@@ -147,7 +147,7 @@ If you run via `npx`, just restart — `npx` fetches the latest version automati
 OpenCode caches npm plugins locally in `~/.cache/opencode/`. Restarting OpenCode does **not** fetch the latest version — it reuses the cache. To update:
 
 ```bash
-rm -rf ~/.cache/opencode/node_modules/opencode-tasksync
+rm -rf ~/.cache/opencode/packages/opencode-tasksync@latest
 ```
 
 Then restart OpenCode. It will re-install the latest version on startup.

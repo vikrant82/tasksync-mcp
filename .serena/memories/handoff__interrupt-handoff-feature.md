@@ -1,122 +1,100 @@
-# Handoff: Interrupt/Refactor Stream
+# Handoff: Interrupt/Refactor/Release Stream
 
 ## Date
-2026-04-19
+2026-04-20
 
 ## Session Summary
-Continued the interrupt/refactor workstream from the earlier `ui-server.ts` split. First confirmed the live system still looked healthy after restart/sanity checks: `curl http://127.0.0.1:3011/health` returned `status: ok` with version `1.5.0`, and `curl http://127.0.0.1:3456/` returned HTTP 200.
+This session completed the full review, prompt improvement, release, and documentation cycle for the refactoring + interrupt feature work.
 
-From there, the work stayed intentionally behavior-preserving and kept the "no new validations" constraint. The remaining large seams were extracted out of `src/index.ts` and `src/session-manager.ts`:
-- `src/feedback-handler.ts` now owns MCP tool registration and wait logic for `get_feedback` / `check_interrupts`
-- `src/mcp-server.ts` now owns MCP transport/bootstrap, request context, `/mcp` routes, per-session server creation, waiter cleanup helpers, and `/health`
-- `src/feedback-state.ts` now owns feedback queues, urgent feedback, waiters, history, remote-enabled state, and persisted feedback-state writes
-- `src/alias-state.ts` now owns manual/inferred aliases, client generations, active UI session selection, and `resolveTargetSession`
+### What was accomplished:
+1. **Full code review** of the extraction refactor (monolith → 5 modules, -1309 lines net). 6 polish issues identified (DRY violation in ui-server, ~25 pass-through one-liners in session-manager, mutable state exposure in FeedbackStateManager, MCP server missing shutdown handle, duplicated `__default__` constant, dead if block in pruneStale).
+2. **Stale session detection investigation** — identified root cause: MCP SDK's `StreamableHTTPServerTransport` is stateless HTTP, `transport.onclose` only fires on explicit `close()`. Two failure cases identified. Three fix options proposed. User deferred: leave as-is for now.
+3. **Prompt improvements** — integrated `check_interrupts` into Turn Structure (removed "Experimental" label), added concrete trigger points and minimum cadence (>5 tool calls), subagent delegation guidance, retry backoff (1s/5s/15s/30s), precedence rule, self-repair rule, 3 concrete examples.
+4. **Feedback loop reinforcement** — every 5th `get_feedback` call injects a `<system-reminder>` reinforcing the loop protocol via `feedbackCallCounts` map + `FEEDBACK_LOOP_REMINDER` constant in `opencode-plugin/src/index.ts`.
+5. **Pause/resume deduplication** — AGENTS.md §5 slimmed to 5-line skill triggers. Daemon overlay/prompt Pause sections slimmed similarly. pause-session skill updated with knowledge capture step. start-session skill reviewed (no changes needed).
+6. **Releases** — Server v1.6.0 (tag `v1.6.0`), Plugin v1.4.0 (tag `plugin-v1.4.0`). Both published via `gh release create`.
+7. **Updating docs** — Added to README.md (§Updating) and docs/OPENCODE_PLUGIN.md (§Updating). Documents that OpenCode caches plugins in `~/.cache/opencode/` and restarting alone won't update.
 
-`src/session-manager.ts` now acts more as orchestration around live sessions, prune/lifecycle behavior, and the two focused state managers. `src/index.ts` is now a thin bootstrap/composition entrypoint. `npm run build` passed after each extraction checkpoint, including the final alias-state extraction.
-
-The stream is paused at a clean checkpoint. No intentional functional or validation changes were introduced, and no release is needed just for this refactor-only work. The best next step is automated test coverage, not more extraction.
+### Everything is committed and pushed to main.
 
 ## Immediate Goal
-Resume from this build-green checkpoint and prioritize tests: `AliasStateManager`, `FeedbackStateManager`, `SessionManager` lifecycle/prune behavior, and focused integration coverage for `get_feedback`, interrupts, recovery, and prune behavior. Only continue refactoring if the user explicitly wants to keep decomposing `SessionManager`.
+Next session should focus on **automated tests** or **polish items** from the refactoring review, at user's choice.
 
 ## Completed
-- Confirmed live sanity checks on the restarted server/UI (`/health` healthy, UI HTTP 200)
-- Extracted `src/feedback-handler.ts` from `src/index.ts`
-- Extracted `src/mcp-server.ts` from `src/index.ts`
-- Extracted `src/feedback-state.ts` from `src/session-manager.ts`
-- Extracted `src/alias-state.ts` from `src/session-manager.ts`
-- Updated `src/index.ts` to delegate to the extracted modules
-- Updated `src/session-manager.ts` to compose `FeedbackStateManager` and `AliasStateManager`
-- Refreshed architecture/backlog memories to match the new module layout
-- Verified the latest checkpoint with `npm run build`
-- Verified `check_interrupts` returned `No pending interrupts.` after the last extraction
+- Full extraction refactor review (all 5 new modules + 3 core files)
+- Stale session detection root cause analysis
+- Interrupt protocol prompt improvements (both daemon-overlay.ts and daemon-prompt.ts)
+- Feedback loop reinforcement mechanism (every 5th call)
+- Pause/resume deduplication (AGENTS.md, daemon prompts, skills)
+- Pause-session skill: knowledge capture step added
+- Server v1.6.0 released and pushed
+- Plugin v1.4.0 released and pushed
+- Updating documentation added (README.md, OPENCODE_PLUGIN.md)
+- All changes committed and pushed
 
 ## Open Loops
-- No automated tests were added yet; confidence still comes mainly from builds and targeted sanity checks
-- The remaining dense seam is `SessionManager` prune/session-lifecycle behavior; defer that until after tests unless the user asks otherwise
-- Changes remain uncommitted
-- The worktree is dirty with unrelated user/generated changes and should not be cleaned up automatically
+
+### Refactoring Polish (from review, not blockers)
+1. **DRY violation**: `ui-server.ts` `/api/stream/:sessionId` duplicates feedback-wait protocol from `feedback-handler.ts` — extract to shared service
+2. **Pass-through boilerplate**: ~25 one-liner delegations in `session-manager.ts` (lines 308-428) — consider exposing sub-managers via readonly properties
+3. **Mutable state exposure**: `FeedbackStateManager.getFeedbackState()` returns live mutable object — callers can bypass persistence
+4. **Missing shutdown handle**: `startMcpServer` returns void (unlike `startUiServer`)
+5. **Duplicated constant**: `DEFAULT_FEEDBACK_SESSION = "__default__"` in both `index.ts` and `session-manager.ts`
+6. **Dead code**: Empty `if (!hasActiveTimeout) {}` block in `pruneStale()` (lines 479-481)
+
+### Stale Session Detection (deferred by user)
+- Root cause: MCP SDK stateless HTTP — no TCP-drop detection
+- Fix option 1: Add `markDisconnected()` to SSE close handler in `ui-server.ts:593`
+- Fix option 2: Change default `disconnectAfterMinutes` to nonzero (e.g., 30)
+- Fix option 3: Server-side liveness probe / agent heartbeat
+
+### Tests (highest priority next step)
+- Unit tests for `AliasStateManager`
+- Unit tests for `FeedbackStateManager`
+- Unit/integration coverage for `SessionManager` lifecycle and prune behavior
+- Integration tests for `get_feedback`, `check_interrupts`, recovery, prune behavior
+
+### Known Limitation
+OpenCode caches npm plugins in `~/.cache/opencode/`. Restarting OpenCode does NOT fetch latest plugin version. Must `rm -rf ~/.cache/opencode/node_modules/opencode-tasksync` then restart. This is documented but is an OpenCode upstream issue.
 
 ## Key Decisions
-- Preserve behavior exactly during refactors: no new validation branches, schema changes, or fallback-order changes
-- Stop the architecture cleanup here and treat this as a good debt-paydown checkpoint
-- Prioritize tests next instead of continuing to split files mechanically
-- Do not cut a release for this refactor-only checkpoint; roll it into the next functional or bug-fix release
+- Stale session detection: deferred (user decision)
+- AGENTS.md §5: slimmed to skill triggers only
+- Memory hygiene stays in AGENTS.md (not a separate skill)
+- Knowledge capture added to pause-session skill
+- Tests before more refactors
 
-## Files Modified
-- `src/index.ts` — reduced to bootstrap/composition
-- `src/ui-server.ts` — earlier extracted UI/feedback server module remains in place
-- `src/feedback-handler.ts` — new MCP feedback tool handler module
-- `src/mcp-server.ts` — new MCP transport/bootstrap module
-- `src/session-manager.ts` — now delegates feedback/alias state
-- `src/feedback-state.ts` — new feedback state manager
-- `src/alias-state.ts` — new alias/session-target state manager
-- `README.md` — earlier architecture-doc link
-- `docs/ARCHITECTURE.md` — earlier architecture overview
+## Files Modified This Session
+All committed and pushed. Key changes:
+- `opencode-plugin/src/index.ts` — feedback loop reinforcement (+feedbackCallCounts, FEEDBACK_LOOP_REMINDER)
+- `opencode-plugin/src/daemon-overlay.ts` — prompt improvements (precedence, self-repair, examples, interrupt integration)
+- `opencode-plugin/src/daemon-prompt.ts` — same prompt improvements
+- `~/.agents/skills/pause-session/SKILL.md` — knowledge capture step
+- `src/ui/scripts.ts` — pause button text slimmed
+- `src/channels.ts` — pause button text slimmed
+- `README.md` — updating section added
+- `docs/OPENCODE_PLUGIN.md` — updating section added
+- `package.json` — version 1.6.0
+- `opencode-plugin/package.json` — version 1.4.0
+
+## Current Versions
+- Server: v1.6.0 (npm: tasksync-mcp-http)
+- Plugin: v1.4.0 (npm: opencode-tasksync)
 
 ## Next Memories to Load
-- `handoff__interrupt-handoff-feature.md`
-- `knowledge__architecture.md`
-- `knowledge__recent_workstreams.md`
-- `knowledge__cooperative_interrupt_mechanism.md`
-- `tasks__refactoring_backlog.md`
-- `tasks__todo.md`
+- `knowledge__architecture`
+- `knowledge__cooperative_interrupt_mechanism`
+- `tasks__refactoring_backlog`
+- `tasks__todo`
 
 ## Resumption Prompt
-You are resuming from a clean pause after a behavior-preserving refactor stream. The server/UI split had already been completed earlier, and this session finished the next extractions: `feedback-handler.ts`, `mcp-server.ts`, `feedback-state.ts`, and `alias-state.ts`. The architecture is materially cleaner now, `src/index.ts` is thin, and `SessionManager` delegates focused state clusters.
+You are resuming after a completed review/release cycle. Server v1.6.0 and Plugin v1.4.0 are released and pushed. All changes are committed.
 
-Before doing anything else:
-1. Load this handoff plus `knowledge__architecture.md`, `knowledge__recent_workstreams.md`, `tasks__refactoring_backlog.md`, and `tasks__todo.md`
-2. Check the worktree with `git status --short`
-3. Treat the current state as refactor-only; do not assume a release or version bump is needed
-4. If continuing implementation work, prefer tests first:
-   - unit tests for `AliasStateManager`
-   - unit tests for `FeedbackStateManager`
-   - unit/integration coverage for `SessionManager` lifecycle and prune behavior
-   - integration coverage for `get_feedback`, `check_interrupts`, recovery, and prune behavior
-5. Only continue extracting code from `SessionManager` if the user explicitly wants more structural cleanup after tests
-
-## Raw Artifacts
-### Live sanity checks
-```bash
-curl http://127.0.0.1:3011/health
-# {"status":"ok","version":"1.5.0",...}
-
-curl http://127.0.0.1:3456/
-# HTTP 200
-```
-
-### Successful build
-```bash
-npm run build
-
-> tasksync-mcp-http@1.5.0 build
-> tsc && shx chmod +x dist/*.js
-```
-
-### Interrupt status at final checkpoint
-```text
-No pending interrupts.
-```
-
-### Working tree snapshot near pause
-```text
- M .serena/memories/knowledge__architecture.md
- M .serena/memories/knowledge__cooperative_interrupt_mechanism.md
- M README.md
- M opencode-plugin/package-lock.json
- M opencode-plugin/src/daemon-overlay.ts
- M opencode-plugin/src/daemon-prompt.ts
- M opencode-plugin/src/index.ts
- M package-lock.json
- M src/index.ts
- M src/session-manager.ts
- M src/session-state-store.ts
- M src/ui/feedback-html.ts
-?? docs/ARCHITECTURE.md
-?? src/alias-state.ts
-?? src/feedback-handler.ts
-?? src/feedback-state.ts
-?? src/mcp-server.ts
-?? src/ui-server.ts
-```
+Before doing anything:
+1. Load this handoff plus `knowledge__architecture`, `tasks__refactoring_backlog`, `tasks__todo`
+2. Run `git status --short` to confirm clean state
+3. The recommended next steps are (in priority order):
+   a. **Automated tests** — unit tests for AliasStateManager, FeedbackStateManager; integration tests for get_feedback, check_interrupts, prune behavior
+   b. **Refactoring polish** — 6 issues listed in Open Loops above (none are blockers)
+   c. **Stale session detection** — 3 fix options identified, user deferred
+4. Ask the user which to tackle
