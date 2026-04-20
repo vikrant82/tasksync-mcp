@@ -744,7 +744,7 @@ export const FEEDBACK_HTML_COMPOSER_HISTORY_SCRIPT = `
   if (stopButtonEl) {
     stopButtonEl.addEventListener('click', async function() {
       const sessionId = selectedSessionId || activeSessionInputEl.value.trim();
-      await sendQuickAction('All tasks accomplished, we can **Stop** now. If you are a sub agent, repeat all the summary and information in one last message and stop. Do not call get_feedback again. If you are the main agent, you can just stop.', 'Stop');
+      await sendQuickAction('Stop now and terminate this session. If you are a subagent, the parent/main agent may not see your visible summary from the turn before get_feedback blocks. Therefore, in one final message, restate your latest relevant summary, then acknowledge termination and stop. Do not call get_feedback again on that terminating turn. If you are the main agent, acknowledge termination and stop.', 'Stop');
       // Force-close the session after a short delay to let the agent receive the stop message
       if (sessionId) {
         setTimeout(async () => {

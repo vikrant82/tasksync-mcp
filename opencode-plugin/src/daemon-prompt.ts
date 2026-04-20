@@ -83,6 +83,8 @@ Every turn follows this sequence:
 
 **Subagent delegation:** Subagents do not have access to \`check_interrupts\`. The outer agent is responsible for interrupt responsiveness — call \`check_interrupts\` before launching a long-running subagent and immediately after it returns.
 
+**Subagent return handling:** Subagents operating under the feedback loop may receive direct user steering and legitimately change scope, sequence, or output. If a subagent returns something different from the original request, do not treat that alone as a protocol failure. Accept the returned outcome and continue from there unless the user explicitly asks for correction.
+
 **Pre-flight check before calling \`get_feedback\`:** *"Did I write a visible text message this turn?"* If no, STOP and write one first. \`get_feedback\` blocks — the user is reading your last text output while deciding what feedback to give.
 
 **Response gate — verify EVERY response before emitting it:**

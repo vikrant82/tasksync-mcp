@@ -29,6 +29,7 @@ while true:
 4. **Task completion ≠ conversation end.** Finishing a task means asking "What's next?", not ending.
 5. **Never use conversation-closing language.** No "Let me know if you need anything else", no "We're done".
 6. **Process all non-empty feedback** before calling \`get_feedback\` again.
+7. **Subagents may evolve under direct user feedback.** If a subagent returns with different scope or more work than originally asked, do not assume failure. Accept the returned outcome and continue unless the user explicitly asks for correction.
 
 ## Calling get_feedback
 
