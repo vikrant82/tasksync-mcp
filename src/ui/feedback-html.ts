@@ -844,6 +844,10 @@ ${FEEDBACK_HTML_COMPOSER_HISTORY_SCRIPT}
     const targetWaiting = Boolean(targetSession && targetSession.waitingForFeedback);
     const anyWaiting = waitingSessions.length > 0;
     const firstWaitingSession = waitingSessions[0] || null;
+    const formatSessionLabel = function(session) {
+      if (!session) return null;
+      return session.alias && session.alias.trim() ? session.alias.trim() : session.sessionId;
+    };
 
     // Stop existing timer — will restart if still needed
     if (waitTimerInterval) { clearInterval(waitTimerInterval); waitTimerInterval = null; }
@@ -861,7 +865,8 @@ ${FEEDBACK_HTML_COMPOSER_HISTORY_SCRIPT}
       renderText();
       if (startedAt) waitTimerInterval = setInterval(renderText, 1000);
       textbox.classList.add('waiting');
-      document.title = 'TaskSync - Agent Waiting';
+      const label = formatSessionLabel(targetSession);
+      document.title = label ? ('TaskSync - Agent Waiting - ' + label) : 'TaskSync - Agent Waiting';
       const signature = targetSessionId + ':waiting';
       if (lastWaitSignature !== signature) {
         notifyWaitingTransition(targetSessionId);
@@ -878,7 +883,8 @@ ${FEEDBACK_HTML_COMPOSER_HISTORY_SCRIPT}
       renderText();
       if (startedAt) waitTimerInterval = setInterval(renderText, 1000);
       textbox.classList.remove('waiting');
-      document.title = 'TaskSync - Session Waiting';
+      const label = formatSessionLabel(firstWaitingSession);
+      document.title = label ? ('TaskSync - Session Waiting - ' + label) : 'TaskSync - Session Waiting';
     } else {
       waitBannerEl.className = 'wait-banner idle';
       waitBannerEl.textContent = 'No session is currently blocked on get_feedback.';
